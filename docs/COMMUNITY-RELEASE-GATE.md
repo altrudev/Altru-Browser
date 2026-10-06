@@ -14,17 +14,15 @@ This gate controls release tagging, public capability claims and active communit
 - [x] generated build artifacts and runtime logs are excluded;
 - [x] dependency/license inventory exists;
 - [x] no Servo-derived source is copied into Altru-owned native implementation;
-- [ ] `cargo fmt --check` passes on the exact public candidate commit;
-- [ ] `cargo clippy --all-targets -- -D warnings` passes on the exact public candidate commit;
-- [ ] debug and release suites pass on the exact public candidate commit;
-- [ ] optional promoted feature gates pass;
-- [ ] native platform matrix is re-run from the exact public candidate commit;
-- [ ] release evidence records the exact public commit hash.
+- [x] `cargo fmt --check` passes on the exact public candidate commit;
+- [x] `cargo clippy --all-targets -- -D warnings` passes on the exact public candidate commit;
+- [x] debug and release suites pass on the exact public candidate commit;
+- [x] optional promoted feature gates pass;
+- [x] native platform matrix is re-run from the exact public candidate commit;
+- [x] release evidence is recorded externally against the exact commit via the verification issue/tag;
 
 ## State
 
-Until every runtime/verification item above is bound to the exact public commit: **PUBLIC / EXPERIMENTAL / RELEASE BLOCKED**.
+All required community-foundation gates have passed: **COMMUNITY CANDIDATE ALLOWED**.
 
-After all items pass: **COMMUNITY CANDIDATE ALLOWED**.
-
-Production-readiness is a separate, much higher gate.
+Production-readiness remains a separate, much higher gate.

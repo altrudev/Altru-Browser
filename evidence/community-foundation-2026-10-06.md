@@ -34,6 +34,8 @@ The equivalent native-engine source lineage previously passed Linux runtime and 
 
 A fresh cross-target run against the exact public repository commit is still required before the community release gate is marked ALLOW because Prometheus does not currently have `rustup` and the VPS went offline during the publication run.
 
-State: **PUBLIC / EXPERIMENTAL / COMMUNITY RELEASE BLOCKED ON EXACT CROSS-TARGET RECHECK**.
+The initial foundation publication was intentionally blocked pending an exact public-commit cross-target rerun. That rerun subsequently passed on the VPS and is recorded in GitHub issue #1 and the verified community-foundation tag.
+
+Current state: **PUBLIC / EXPERIMENTAL / COMMUNITY CANDIDATE ALLOWED**.
 
 This is intentionally not represented as a production-readiness result.

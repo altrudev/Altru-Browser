@@ -102,11 +102,11 @@ Security issues should not be filed publicly. See `SECURITY.md`.
 
 ## Licensing
 
-Unless a file says otherwise, this project is available under either:
+Unless a file says otherwise, Altru Browser is dual-licensed under your choice of:
 
-- Apache License 2.0, or
-- MIT License,
+- **MIT License** — see `LICENSE-MIT`; or
+- **Apache License 2.0** — see `LICENSE-APACHE`.
 
-at your option.
+Third-party dependencies keep their own licenses; see `THIRD_PARTY_NOTICES.md` and `docs/DEPENDENCY-REVIEW.md`. Project branding is governed separately from the source-code licenses; see `TRADEMARKS.md`.
 
 Copyright © 2026 Valentyn Rukhaylo / Altru.dev.
