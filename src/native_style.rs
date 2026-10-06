@@ -1,0 +1,375 @@
+//! AWEF-owned computed-style and cascade model.
+//!
+//! N2 keeps browser semantics here. Parsing lives in native_css; renderers and
+//! generic layout libraries do not decide cascade, inheritance, or variables.
+
+use std::collections::BTreeMap;
+
+use crate::native_css::{CssError, CssValue, Declaration, StyleSheet, parse_declarations};
+use crate::native_dom::{NativeDocument, NodeId, NodeKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Display {
+    None,
+    Block,
+    Inline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComputedStyle {
+    pub display: Display,
+    pub font_size_px: f32,
+    pub margin_before_px: f32,
+    pub margin_after_px: f32,
+    pub padding_top_px: f32,
+    pub padding_right_px: f32,
+    pub padding_bottom_px: f32,
+    pub padding_left_px: f32,
+}
+
+impl ComputedStyle {
+    pub const fn initial() -> Self {
+        Self {
+            display: Display::Inline,
+            font_size_px: 16.0,
+            margin_before_px: 0.0,
+            margin_after_px: 0.0,
+            padding_top_px: 0.0,
+            padding_right_px: 0.0,
+            padding_bottom_px: 0.0,
+            padding_left_px: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedStyle {
+    pub computed: ComputedStyle,
+    pub custom_properties: BTreeMap<String, String>,
+}
+
+impl ResolvedStyle {
+    fn initial() -> Self {
+        Self {
+            computed: ComputedStyle::initial(),
+            custom_properties: BTreeMap::new(),
+        }
+    }
+}
+
+pub fn compute_style(kind: &NodeKind) -> ComputedStyle {
+    let mut style = ComputedStyle::initial();
+
+    let NodeKind::Element { tag } = kind else {
+        return style;
+    };
+
+    match tag.as_str() {
+        "html" | "body" | "main" | "article" | "section" | "header" | "footer" | "nav" | "div"
+        | "p" | "blockquote" | "ul" | "ol" | "li" | "pre" => {
+            style.display = Display::Block;
+            style.margin_before_px = if tag == "p" { 8.0 } else { 0.0 };
+            style.margin_after_px = if tag == "p" { 8.0 } else { 0.0 };
+        }
+        "h1" => {
+            style.display = Display::Block;
+            style.font_size_px = 32.0;
+            style.margin_before_px = 12.0;
+            style.margin_after_px = 8.0;
+        }
+        "h2" => {
+            style.display = Display::Block;
+            style.font_size_px = 28.0;
+            style.margin_before_px = 10.0;
+            style.margin_after_px = 7.0;
+        }
+        "h3" => {
+            style.display = Display::Block;
+            style.font_size_px = 24.0;
+            style.margin_before_px = 8.0;
+            style.margin_after_px = 6.0;
+        }
+        "script" | "style" | "head" => {
+            style.display = Display::None;
+        }
+        _ => {}
+    }
+
+    style
+}
+
+fn ua_specifies_font_size(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Element { tag }
+            if matches!(tag.as_str(), "h1" | "h2" | "h3")
+    )
+}
+
+fn parse_custom_px(property: &str, value: &str) -> Result<f32, CssError> {
+    let Some(number) = value.trim().strip_suffix("px") else {
+        return Err(CssError::InvalidValue {
+            property: property.into(),
+            value: value.into(),
+        });
+    };
+    let parsed = number
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| CssError::InvalidValue {
+            property: property.into(),
+            value: value.into(),
+        })?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err(CssError::InvalidValue {
+            property: property.into(),
+            value: value.into(),
+        });
+    }
+    Ok(parsed)
+}
+
+fn resolve_value(
+    declaration: &Declaration,
+    custom_properties: &BTreeMap<String, String>,
+) -> Result<CssValue, CssError> {
+    match &declaration.value {
+        CssValue::Var(name) => {
+            let raw = custom_properties
+                .get(name)
+                .ok_or_else(|| CssError::UnresolvedCustomProperty(name.clone()))?;
+            match declaration.property.as_str() {
+                "font-size" | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
+                | "padding-bottom" | "padding-left" => {
+                    Ok(CssValue::Px(parse_custom_px(&declaration.property, raw)?))
+                }
+                _ => Err(CssError::InvalidValue {
+                    property: declaration.property.clone(),
+                    value: format!("var({name})"),
+                }),
+            }
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+fn apply_value(style: &mut ComputedStyle, property: &str, value: &CssValue) {
+    match (property, value) {
+        ("display", CssValue::Display(value)) => {
+            style.display = match value.as_str() {
+                "none" => Display::None,
+                "block" => Display::Block,
+                "inline" => Display::Inline,
+                _ => style.display,
+            };
+        }
+        ("font-size", CssValue::Px(value)) => style.font_size_px = *value,
+        ("margin-top", CssValue::Px(value)) => style.margin_before_px = *value,
+        ("margin-bottom", CssValue::Px(value)) => style.margin_after_px = *value,
+        ("padding-top", CssValue::Px(value)) => style.padding_top_px = *value,
+        ("padding-right", CssValue::Px(value)) => style.padding_right_px = *value,
+        ("padding-bottom", CssValue::Px(value)) => style.padding_bottom_px = *value,
+        ("padding-left", CssValue::Px(value)) => style.padding_left_px = *value,
+        _ => {}
+    }
+}
+
+fn resolve_element_style(
+    document: &NativeDocument,
+    node: NodeId,
+    parent_style: &ResolvedStyle,
+    sheet: &StyleSheet,
+) -> Result<ResolvedStyle, CssError> {
+    let Some(candidate) = document.node(node) else {
+        return Ok(ResolvedStyle::initial());
+    };
+
+    let mut computed = compute_style(&candidate.kind);
+    if !ua_specifies_font_size(&candidate.kind) {
+        computed.font_size_px = parent_style.computed.font_size_px;
+    }
+
+    let mut declarations = Vec::new();
+    let mut matching = sheet
+        .rules
+        .iter()
+        .filter(|rule| rule.selector.matches(document, node))
+        .collect::<Vec<_>>();
+    matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+
+    for rule in matching {
+        declarations.extend(rule.declarations.iter().cloned());
+    }
+
+    if let Some(inline) = document.attribute(node, "style") {
+        declarations.extend(parse_declarations(inline)?);
+    }
+
+    let mut custom_properties = parent_style.custom_properties.clone();
+    for declaration in &declarations {
+        if declaration.property.starts_with("--")
+            && let CssValue::Raw(value) = &declaration.value
+        {
+            custom_properties.insert(declaration.property.clone(), value.clone());
+        }
+    }
+
+    for declaration in &declarations {
+        if declaration.property.starts_with("--") {
+            continue;
+        }
+        let value = resolve_value(declaration, &custom_properties)?;
+        apply_value(&mut computed, &declaration.property, &value);
+    }
+
+    Ok(ResolvedStyle {
+        computed,
+        custom_properties,
+    })
+}
+
+pub fn resolve_styles(
+    document: &NativeDocument,
+    sheet: &StyleSheet,
+) -> Result<Vec<ResolvedStyle>, CssError> {
+    let mut styles = vec![ResolvedStyle::initial(); document.nodes().len()];
+
+    fn walk(
+        document: &NativeDocument,
+        sheet: &StyleSheet,
+        node: NodeId,
+        parent_style: &ResolvedStyle,
+        styles: &mut [ResolvedStyle],
+    ) -> Result<(), CssError> {
+        let Some(candidate) = document.node(node) else {
+            return Ok(());
+        };
+
+        let style = match &candidate.kind {
+            NodeKind::Document => parent_style.clone(),
+            NodeKind::Text(_) => {
+                let mut inherited = ResolvedStyle::initial();
+                inherited.computed.font_size_px = parent_style.computed.font_size_px;
+                inherited.computed.display = parent_style.computed.display;
+                inherited.custom_properties = parent_style.custom_properties.clone();
+                inherited
+            }
+            NodeKind::Element { .. } => resolve_element_style(document, node, parent_style, sheet)?,
+        };
+        styles[node] = style.clone();
+
+        for child in &candidate.children {
+            walk(document, sheet, *child, &style, styles)?;
+        }
+        Ok(())
+    }
+
+    let initial = ResolvedStyle::initial();
+    walk(document, sheet, document.root(), &initial, &mut styles)?;
+    Ok(styles)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native_css::parse_stylesheet;
+    use crate::native_html::parse_document;
+
+    #[test]
+    fn heading_style_is_engine_owned() {
+        let style = compute_style(&NodeKind::Element { tag: "h1".into() });
+        assert_eq!(style.display, Display::Block);
+        assert_eq!(style.font_size_px, 32.0);
+    }
+
+    #[test]
+    fn hidden_elements_are_not_layout_visible() {
+        let style = compute_style(&NodeKind::Element {
+            tag: "script".into(),
+        });
+        assert_eq!(style.display, Display::None);
+    }
+
+    #[test]
+    fn id_specificity_beats_class_and_tag() {
+        let document =
+            parse_document("<html><body><p id=\"hero\" class=\"lead\">Hello</p></body></html>")
+                .unwrap();
+        let sheet = parse_stylesheet(
+            "p { font-size: 18px; } .lead { font-size: 20px; } #hero { font-size: 24px; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let paragraph = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
+            .unwrap();
+        assert_eq!(styles[paragraph.id].computed.font_size_px, 24.0);
+    }
+
+    #[test]
+    fn font_size_inherits_from_parent() {
+        let document =
+            parse_document("<html><body><div class=\"large\"><span>X</span></div></body></html>")
+                .unwrap();
+        let sheet = parse_stylesheet(".large { font-size: 23px; }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let span = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "span"))
+            .unwrap();
+        assert_eq!(styles[span.id].computed.font_size_px, 23.0);
+    }
+
+    #[test]
+    fn inline_style_wins_over_author_rule() {
+        let document = parse_document(
+            "<html><body><p class=\"lead\" style=\"font-size: 26px\">X</p></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(".lead { font-size: 20px; }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let paragraph = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
+            .unwrap();
+        assert_eq!(styles[paragraph.id].computed.font_size_px, 26.0);
+    }
+
+    #[test]
+    fn custom_property_inherits_and_resolves() {
+        let document = parse_document(
+            "<html><body><div class=\"scope\"><span class=\"child\">X</span></div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(".scope { --size: 21px; } .child { font-size: var(--size); }")
+            .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let span = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "span"))
+            .unwrap();
+        assert_eq!(styles[span.id].computed.font_size_px, 21.0);
+        assert_eq!(
+            styles[span.id]
+                .custom_properties
+                .get("--size")
+                .map(String::as_str),
+            Some("21px")
+        );
+    }
+
+    #[test]
+    fn unresolved_custom_property_fails_closed() {
+        let document = parse_document("<html><body><p class=\"x\">X</p></body></html>").unwrap();
+        let sheet = parse_stylesheet(".x { font-size: var(--missing); }").unwrap();
+        assert!(matches!(
+            resolve_styles(&document, &sheet),
+            Err(CssError::UnresolvedCustomProperty(name)) if name == "--missing"
+        ));
+    }
+}

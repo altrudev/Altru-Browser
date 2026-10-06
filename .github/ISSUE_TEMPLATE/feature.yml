@@ -1,0 +1,32 @@
+name: Feature or standards proposal
+description: Propose a capability, standards improvement, or developer feature
+title: "[Proposal] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user, standards, portability, security, or developer problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed direction
+    validations:
+      required: true
+  - type: textarea
+    id: standards
+    attributes:
+      label: Relevant standards or evidence
+      description: Include specifications, WPT/Test262 areas, or measurable evidence when applicable.
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Architectural boundary
+      description: Which owned interface or semantic boundary should contain this work?
+  - type: textarea
+    id: risks
+    attributes:
+      label: Security, privacy, portability, or resource risks
