@@ -33,3 +33,7 @@ See `../docs/BRAND.md`.
 ## Rights
 
 Official marks and branded artwork are governed by `BRAND-LICENSE.md` and `../TRADEMARKS.md`, not by the source-code MIT/Apache-2.0 grant.
+
+## Altru.dev production use
+
+The official mark is used by the Altru.dev featured-product card. The governed production deployment and exact predecessor/after hashes are recorded in `../evidence/altru-dev-featured-integration-2026-10-06.md`.
