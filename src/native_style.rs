@@ -13,6 +13,14 @@ pub enum Display {
     None,
     Block,
     Inline,
+    Flex,
+    Grid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlexDirection {
+    Row,
+    Column,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,6 +33,9 @@ pub struct ComputedStyle {
     pub padding_right_px: f32,
     pub padding_bottom_px: f32,
     pub padding_left_px: f32,
+    pub flex_direction: FlexDirection,
+    pub gap_px: f32,
+    pub grid_columns: u16,
 }
 
 impl ComputedStyle {
@@ -38,6 +49,9 @@ impl ComputedStyle {
             padding_right_px: 0.0,
             padding_bottom_px: 0.0,
             padding_left_px: 0.0,
+            flex_direction: FlexDirection::Row,
+            gap_px: 0.0,
+            grid_columns: 1,
         }
     }
 }
@@ -140,7 +154,7 @@ fn resolve_value(
                 .ok_or_else(|| CssError::UnresolvedCustomProperty(name.clone()))?;
             match declaration.property.as_str() {
                 "font-size" | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
-                | "padding-bottom" | "padding-left" => {
+                | "padding-bottom" | "padding-left" | "gap" => {
                     Ok(CssValue::Px(parse_custom_px(&declaration.property, raw)?))
                 }
                 _ => Err(CssError::InvalidValue {
@@ -160,9 +174,19 @@ fn apply_value(style: &mut ComputedStyle, property: &str, value: &CssValue) {
                 "none" => Display::None,
                 "block" => Display::Block,
                 "inline" => Display::Inline,
+                "flex" => Display::Flex,
+                "grid" => Display::Grid,
                 _ => style.display,
             };
         }
+        ("flex-direction", CssValue::Keyword(value)) => {
+            style.flex_direction = match value.as_str() {
+                "column" => FlexDirection::Column,
+                _ => FlexDirection::Row,
+            };
+        }
+        ("grid-template-columns", CssValue::GridColumns(value)) => style.grid_columns = *value,
+        ("gap", CssValue::Px(value)) => style.gap_px = *value,
         ("font-size", CssValue::Px(value)) => style.font_size_px = *value,
         ("margin-top", CssValue::Px(value)) => style.margin_before_px = *value,
         ("margin-bottom", CssValue::Px(value)) => style.margin_after_px = *value,
@@ -361,6 +385,38 @@ mod tests {
                 .map(String::as_str),
             Some("21px")
         );
+    }
+
+    #[test]
+    fn owned_flex_grid_semantics_reach_computed_style() {
+        let document = parse_document(
+            "<html><body><div class=\"flex\">A</div><div class=\"grid\">B</div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".flex { display: flex; flex-direction: column; gap: 9px; } .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let flex = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("flex"))
+            .unwrap();
+        let grid = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("grid"))
+            .unwrap();
+        assert_eq!(styles[flex.id].computed.display, Display::Flex);
+        assert_eq!(
+            styles[flex.id].computed.flex_direction,
+            FlexDirection::Column
+        );
+        assert_eq!(styles[flex.id].computed.gap_px, 9.0);
+        assert_eq!(styles[grid.id].computed.display, Display::Grid);
+        assert_eq!(styles[grid.id].computed.grid_columns, 2);
+        assert_eq!(styles[grid.id].computed.gap_px, 7.0);
     }
 
     #[test]

@@ -72,16 +72,21 @@ impl EngineAdapter for NativeEngineAdapter {
     type Error = NativeEngineError;
 
     fn manifest(&self) -> EngineManifest {
+        let mut capabilities = vec![
+            EngineCapability::HtmlDocument,
+            EngineCapability::CssCascade,
+            EngineCapability::BlockLayout,
+            EngineCapability::InlineLayout,
+            EngineCapability::OffscreenRender,
+        ];
+        if cfg!(feature = "taffy-layout") {
+            capabilities.push(EngineCapability::FlexLayout);
+            capabilities.push(EngineCapability::GridLayout);
+        }
         EngineManifest {
             implementation: "awef-native".into(),
-            version: "n2".into(),
-            capabilities: vec![
-                EngineCapability::HtmlDocument,
-                EngineCapability::CssCascade,
-                EngineCapability::BlockLayout,
-                EngineCapability::InlineLayout,
-                EngineCapability::OffscreenRender,
-            ],
+            version: "n2.1".into(),
+            capabilities,
             platform_support: vec![
                 PlatformClaim {
                     platform: "linux".into(),
@@ -128,7 +133,7 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
     let input_sha256 = sha256(input.as_bytes());
     let artifact_sha256 = sha256(artifact.as_bytes());
     let execution_material = format!(
-        "awef-native-n2-execution-v1\n{}\n{}\n{}\n{}",
+        "awef-native-n2.1-execution-v1\n{}\n{}\n{}\n{}",
         input_sha256,
         artifact_sha256,
         document.mutation_epoch(),
@@ -165,6 +170,15 @@ mod tests {
         assert_eq!(manifest.promotion, PromotionState::Experiment);
         assert!(manifest.supports(EngineCapability::HtmlDocument));
         assert!(manifest.supports(EngineCapability::CssCascade));
+        assert_eq!(manifest.version, "n2.1");
+        assert_eq!(
+            manifest.supports(EngineCapability::FlexLayout),
+            cfg!(feature = "taffy-layout")
+        );
+        assert_eq!(
+            manifest.supports(EngineCapability::GridLayout),
+            cfg!(feature = "taffy-layout")
+        );
         assert_eq!(
             manifest.platform_status("linux"),
             Some(PlatformStatus::RuntimeVerified)

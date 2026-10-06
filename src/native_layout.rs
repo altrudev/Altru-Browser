@@ -5,8 +5,9 @@
 
 use crate::native_css::StyleSheet;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
+use crate::native_layout_taffy::{GeometryChild, GeometryMode, GeometryRequest, solve_geometry};
 use crate::native_scene::{Scene, SceneCommand};
-use crate::native_style::{ComputedStyle, Display, ResolvedStyle, resolve_styles};
+use crate::native_style::{ComputedStyle, Display, FlexDirection, ResolvedStyle, resolve_styles};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutFragment {
@@ -26,6 +27,39 @@ pub struct LayoutTree {
     pub epoch: u64,
 }
 
+fn estimate_subtree_height(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    node: NodeId,
+) -> f32 {
+    let Some(candidate) = document.node(node) else {
+        return 1.0;
+    };
+    let style = styles
+        .get(node)
+        .map(|resolved| resolved.computed)
+        .unwrap_or_else(ComputedStyle::initial);
+    if style.display == Display::None {
+        return 0.0;
+    }
+    match &candidate.kind {
+        NodeKind::Text(_) => (style.font_size_px * 1.35).ceil(),
+        _ => {
+            let children = candidate
+                .children
+                .iter()
+                .map(|child| estimate_subtree_height(document, styles, *child))
+                .sum::<f32>();
+            (children
+                + style.padding_top_px
+                + style.padding_bottom_px
+                + style.margin_before_px
+                + style.margin_after_px)
+                .max(1.0)
+        }
+    }
+}
+
 fn layout_node(
     document: &NativeDocument,
     styles: &[ResolvedStyle],
@@ -34,9 +68,9 @@ fn layout_node(
     width: f32,
     y: &mut f32,
     fragments: &mut Vec<LayoutFragment>,
-) {
+) -> Result<(), crate::native_css::CssError> {
     let Some(candidate) = document.node(node) else {
-        return;
+        return Ok(());
     };
     let style = styles
         .get(node)
@@ -44,13 +78,13 @@ fn layout_node(
         .unwrap_or_else(ComputedStyle::initial);
 
     if style.display == Display::None {
-        return;
+        return Ok(());
     }
 
     match &candidate.kind {
         NodeKind::Document => {
             for child in &candidate.children {
-                layout_node(document, styles, *child, x, width, y, fragments);
+                layout_node(document, styles, *child, x, width, y, fragments)?;
             }
         }
         NodeKind::Text(text) => {
@@ -66,6 +100,65 @@ fn layout_node(
             });
             *y += line_height;
         }
+        NodeKind::Element { .. } if matches!(style.display, Display::Flex | Display::Grid) => {
+            *y += style.margin_before_px + style.padding_top_px;
+            let child_x = x + style.padding_left_px;
+            let child_width = (width - style.padding_left_px - style.padding_right_px).max(1.0);
+            let visible_children = candidate
+                .children
+                .iter()
+                .copied()
+                .filter(|child| {
+                    styles
+                        .get(*child)
+                        .map(|resolved| resolved.computed.display != Display::None)
+                        .unwrap_or(true)
+                })
+                .collect::<Vec<_>>();
+
+            let mode = match style.display {
+                Display::Flex => match style.flex_direction {
+                    FlexDirection::Row => GeometryMode::FlexRow,
+                    FlexDirection::Column => GeometryMode::FlexColumn,
+                },
+                Display::Grid => GeometryMode::Grid {
+                    columns: style.grid_columns,
+                },
+                _ => unreachable!(),
+            };
+            let request = GeometryRequest {
+                mode,
+                width: child_width,
+                gap: style.gap_px,
+                children: visible_children
+                    .iter()
+                    .map(|child| GeometryChild {
+                        min_height: estimate_subtree_height(document, styles, *child),
+                    })
+                    .collect(),
+            };
+            let geometry =
+                solve_geometry(&request).map_err(crate::native_css::CssError::UnsupportedLayout)?;
+            let origin_y = *y;
+            let mut content_bottom = origin_y;
+            for (child, geometry_box) in visible_children.iter().zip(geometry.children.iter()) {
+                let mut local_y = origin_y + geometry_box.y;
+                layout_node(
+                    document,
+                    styles,
+                    *child,
+                    child_x + geometry_box.x,
+                    geometry_box.width.max(1.0),
+                    &mut local_y,
+                    fragments,
+                )?;
+                content_bottom = content_bottom
+                    .max(local_y)
+                    .max(origin_y + geometry_box.y + geometry_box.height);
+            }
+            *y = content_bottom.max(origin_y + geometry.height);
+            *y += style.padding_bottom_px + style.margin_after_px;
+        }
         NodeKind::Element { .. } => {
             let block = style.display == Display::Block;
             if block {
@@ -76,7 +169,7 @@ fn layout_node(
             let child_width = (width - style.padding_left_px - style.padding_right_px).max(1.0);
 
             for child in &candidate.children {
-                layout_node(document, styles, *child, child_x, child_width, y, fragments);
+                layout_node(document, styles, *child, child_x, child_width, y, fragments)?;
             }
 
             if block {
@@ -84,6 +177,7 @@ fn layout_node(
             }
         }
     }
+    Ok(())
 }
 
 pub fn layout_document_with_styles(
@@ -104,7 +198,7 @@ pub fn layout_document_with_styles(
         (width - 32.0).max(1.0),
         &mut y,
         &mut fragments,
-    );
+    )?;
 
     Ok(LayoutTree {
         fragments,
@@ -184,6 +278,48 @@ mod tests {
         let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
         assert_eq!(layout.fragments.len(), 1);
         assert_eq!(layout.fragments[0].text.as_deref(), Some("Visible"));
+    }
+
+    #[cfg(feature = "taffy-layout")]
+    #[test]
+    fn owned_flex_style_drives_geometry_adapter() {
+        let document = parse_document(
+            "<html><body><div class=\"row\"><span>A</span><span>B</span></div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(".row { display: flex; gap: 10px; }").unwrap();
+        let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
+        assert_eq!(layout.fragments.len(), 2);
+        assert!(layout.fragments[1].x > layout.fragments[0].x);
+    }
+
+    #[cfg(feature = "taffy-layout")]
+    #[test]
+    fn owned_grid_style_drives_geometry_adapter() {
+        let document = parse_document(
+            "<html><body><div class=\"grid\"><span>A</span><span>B</span><span>C</span></div></body></html>",
+        ).unwrap();
+        let sheet =
+            parse_stylesheet(".grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }")
+                .unwrap();
+        let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
+        assert_eq!(layout.fragments.len(), 3);
+        assert!(layout.fragments[1].x > layout.fragments[0].x);
+        assert!(layout.fragments[2].y > layout.fragments[0].y);
+    }
+
+    #[cfg(not(feature = "taffy-layout"))]
+    #[test]
+    fn flex_grid_fail_closed_without_geometry_adapter() {
+        let document = parse_document(
+            "<html><body><div class=\"row\"><span>A</span><span>B</span></div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(".row { display: flex; }").unwrap();
+        assert!(matches!(
+            layout_document_with_styles(&document, &sheet, 320.0),
+            Err(crate::native_css::CssError::UnsupportedLayout(_))
+        ));
     }
 
     #[test]
