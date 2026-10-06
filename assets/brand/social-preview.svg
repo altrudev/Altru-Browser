@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640"><defs>
+  <linearGradient id="midnight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#071426"/><stop offset="1" stop-color="#102f4d"/></linearGradient>
+  <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4db4ff"/><stop offset="1" stop-color="#78d7ff"/></linearGradient>
+  <linearGradient id="wheat" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffd45a"/><stop offset="1" stop-color="#f0b834"/></linearGradient>
+  <filter id="soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="14"/></filter>
+</defs><rect width="1280" height="640" fill="url(#midnight)"/><circle cx="1110" cy="110" r="220" fill="#17476b" opacity=".34" filter="url(#soft)"/><circle cx="105" cy="560" r="220" fill="#5b4010" opacity=".22" filter="url(#soft)"/><g opacity=".28"><path d="M0 96h1280M0 544h1280" stroke="#377aa1"/><path d="M70 96l36-28 36 28 36-28 36 28 36-28 36 28 36-28 36 28" stroke="#65c7ff" stroke-width="5" fill="none"/><path d="M920 544l36 28 36-28 36 28 36-28 36 28 36-28 36 28" stroke="#f7c948" stroke-width="5" fill="none"/></g><g transform="translate(85,60) scale(.72)"><g id="mark" fill="none" stroke-linejoin="round" stroke-linecap="round">
+  <path d="M256 70 305 119 256 168 207 119Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M158 168 207 119 256 168 207 217Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 168 305 119 256 168 305 217Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M207 217 256 168 305 217 256 266Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M158 266 207 217 256 266 207 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 266 305 217 256 266 305 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M207 315 256 266 305 315 256 364Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M256 364 305 413 256 462 207 413Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M128 256h62M322 256h62M256 40v62M256 410v62" stroke="#d8323c" stroke-width="10" opacity=".78"/>
+</g></g><text x="450" y="220" fill="#f7fbff" font-family="Inter,Arial,sans-serif" font-size="104" font-weight="760" letter-spacing="-4">Altru Browser</text><text x="456" y="294" fill="#8fd3f3" font-family="Inter,Arial,sans-serif" font-size="34" font-weight="560" letter-spacing="6">CODE FOR HUMANITY</text><text x="456" y="382" fill="#d6e7f2" font-family="Inter,Arial,sans-serif" font-size="34">Independent adaptive browser + native web engine</text><text x="456" y="430" fill="#90aabc" font-family="Inter,Arial,sans-serif" font-size="27">Rust-first · cross-platform · privacy-minded · evidence-gated</text><g transform="translate(456 486)"><rect width="228" height="54" rx="27" fill="#102c45" stroke="#315c78"/><text x="25" y="36" fill="#f5c94f" font-family="Inter,Arial,sans-serif" font-size="23" font-weight="650">EXPERIMENTAL</text></g></svg>

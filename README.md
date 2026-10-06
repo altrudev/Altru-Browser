@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/altru-browser-wordmark.svg" alt="Altru Browser — Code for Humanity" width="760">
+</p>
+
 # Altru Browser
 
 **Code for Humanity.**
@@ -23,6 +27,22 @@ The current native path includes:
 - an optional Servo 0.6.0 compatibility adapter used as a reference/bootstrap path, not as the long-term browser identity.
 
 No capability is advertised as production-ready until its evidence gate is satisfied.
+
+## Product direction
+
+The browser shell is intentionally familiar enough to use immediately while avoiding a Chrome/Safari clone. The current visual direction keeps a top URL bar, makes adaptive resource decisions visible, and uses a restrained Ukrainian vyshyvanka-inspired geometry as structural identity.
+
+### Desktop
+
+![Altru Browser desktop shell direction](assets/mockups/desktop-shell.png)
+
+### Mobile
+
+<p align="center">
+  <img src="assets/mockups/mobile-shell.png" alt="Altru Browser mobile shell direction" width="390">
+</p>
+
+These are design-direction artifacts, not screenshots of a production-ready browser. See `docs/BRAND.md` and `assets/README.md`.
 
 ## Architecture
 

@@ -7,3 +7,7 @@ The names **Altru Browser**, **Altru.dev**, the phrase **Code for Humanity** as 
 You may make accurate factual references to the project and may state that a derivative is based on Altru Browser. Modified distributions should use clearly distinguishable branding unless permission to use official branding has been granted.
 
 Nothing here limits rights that applicable trademark law independently provides.
+
+## Brand asset terms
+
+Official repository artwork and marks are governed by `assets/BRAND-LICENSE.md`.

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900"><defs>
+  <linearGradient id="midnight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#071426"/><stop offset="1" stop-color="#102f4d"/></linearGradient>
+  <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4db4ff"/><stop offset="1" stop-color="#78d7ff"/></linearGradient>
+  <linearGradient id="wheat" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffd45a"/><stop offset="1" stop-color="#f0b834"/></linearGradient>
+  <filter id="soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="14"/></filter>
+</defs><rect width="1600" height="900" rx="56" fill="#081626"/><rect x="2" y="2" width="1596" height="896" rx="54" fill="none" stroke="#1f4561" stroke-width="4"/><path d="M0 128h1600" stroke="#16354c"/><g opacity=".5"><path d="M56 128l32-24 32 24 32-24 32 24 32-24 32 24 32-24 32 24 32-24 32 24" fill="none" stroke="#5bbcf2" stroke-width="5"/><path d="M1180 128l32-24 32 24 32-24 32 24 32-24 32 24 32-24 32 24" fill="none" stroke="#f3c44d" stroke-width="5"/></g><g transform="translate(102,104) scale(.38)"><g id="mark" fill="none" stroke-linejoin="round" stroke-linecap="round">
+  <path d="M256 70 305 119 256 168 207 119Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M158 168 207 119 256 168 207 217Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 168 305 119 256 168 305 217Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M207 217 256 168 305 217 256 266Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M158 266 207 217 256 266 207 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 266 305 217 256 266 305 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M207 315 256 266 305 315 256 364Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M256 364 305 413 256 462 207 413Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M128 256h62M322 256h62M256 40v62M256 410v62" stroke="#d8323c" stroke-width="10" opacity=".78"/>
+</g></g><text x="322" y="255" fill="#f7fbff" font-family="Inter,Arial,sans-serif" font-size="94" font-weight="760">Altru Browser</text><text x="326" y="318" fill="#7bc8ef" font-family="Inter,Arial,sans-serif" font-size="31" letter-spacing="5">CODE FOR HUMANITY</text><text x="110" y="480" fill="#eaf5fb" font-family="Inter,Arial,sans-serif" font-size="52" font-weight="650">A browser that uses only as much engine</text><text x="110" y="542" fill="#eaf5fb" font-family="Inter,Arial,sans-serif" font-size="52" font-weight="650">as the page actually needs.</text><text x="110" y="632" fill="#9ab6c8" font-family="Inter,Arial,sans-serif" font-size="31">Independent native engine · explicit trust boundaries · cross-platform by contract</text><g transform="translate(110 704)"><rect width="246" height="62" rx="31" fill="#15344e" stroke="#357199"/><text x="33" y="40" fill="#f5cb50" font-family="Inter,Arial,sans-serif" font-size="25" font-weight="700">PUBLIC EXPERIMENT</text></g><g transform="translate(384 704)"><rect width="220" height="62" rx="31" fill="#0e2a3f" stroke="#28516d"/><text x="32" y="40" fill="#83d3fa" font-family="Inter,Arial,sans-serif" font-size="25" font-weight="650">RUST / NATIVE</text></g><g transform="translate(1260 625) scale(.52)" opacity=".9"><g id="mark" fill="none" stroke-linejoin="round" stroke-linecap="round">
+  <path d="M256 70 305 119 256 168 207 119Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M158 168 207 119 256 168 207 217Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 168 305 119 256 168 305 217Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M207 217 256 168 305 217 256 266Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M158 266 207 217 256 266 207 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 266 305 217 256 266 305 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M207 315 256 266 305 315 256 364Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M256 364 305 413 256 462 207 413Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M128 256h62M322 256h62M256 40v62M256 410v62" stroke="#d8323c" stroke-width="10" opacity=".78"/>
+</g></g></svg>

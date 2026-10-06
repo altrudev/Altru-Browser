@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 300"><defs>
+  <linearGradient id="midnight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#071426"/><stop offset="1" stop-color="#102f4d"/></linearGradient>
+  <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4db4ff"/><stop offset="1" stop-color="#78d7ff"/></linearGradient>
+  <linearGradient id="wheat" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffd45a"/><stop offset="1" stop-color="#f0b834"/></linearGradient>
+  <filter id="soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="14"/></filter>
+</defs><rect width="1300" height="300" rx="48" fill="#071426"/><g transform="translate(30,-106) scale(.62)"><g id="mark" fill="none" stroke-linejoin="round" stroke-linecap="round">
+  <path d="M256 70 305 119 256 168 207 119Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M158 168 207 119 256 168 207 217Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 168 305 119 256 168 305 217Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M207 217 256 168 305 217 256 266Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M158 266 207 217 256 266 207 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M354 266 305 217 256 266 305 315Z" stroke="#65c7ff" stroke-width="18"/>
+  <path d="M207 315 256 266 305 315 256 364Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M256 364 305 413 256 462 207 413Z" stroke="#f7c948" stroke-width="18"/>
+  <path d="M128 256h62M322 256h62M256 40v62M256 410v62" stroke="#d8323c" stroke-width="10" opacity=".78"/>
+</g></g><text x="360" y="137" fill="#f7fbff" font-family="Inter,Arial,sans-serif" font-size="92" font-weight="720" letter-spacing="-3">Altru Browser</text><text x="363" y="202" fill="#8fcbe8" font-family="Inter,Arial,sans-serif" font-size="32" font-weight="500" letter-spacing="5">CODE FOR HUMANITY</text><path d="M364 232h610" stroke="#24445d" stroke-width="2"/><path d="M364 232h190l24-14 24 14h190l24-14 24 14h134" stroke="#f0bd3f" stroke-width="5" opacity=".9"/></svg>

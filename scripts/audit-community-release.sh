@@ -24,6 +24,9 @@ required=(
   NOTICE
   THIRD_PARTY_NOTICES.md
   TRADEMARKS.md
+  assets/BRAND-LICENSE.md
+  assets/README.md
+  docs/BRAND.md
   docs/COMMUNITY-RELEASE-GATE.md
   docs/OPEN-SOURCE-BOUNDARY.md
   docs/NATIVE-ENGINE-ROADMAP.md
