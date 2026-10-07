@@ -546,7 +546,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         });
     }
 
-    if input.contains(',') {
+    if split_selector_list(input)?.len() > 1 {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
 
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn unsupported_pseudo_class_still_fails_closed() {
         assert!(matches!(
-            parse_selector("img:not(.x)"),
+            parse_selector("a:visited"),
             Err(CssError::UnsupportedSelector(_))
         ));
     }
