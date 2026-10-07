@@ -16,13 +16,18 @@ This roadmap describes capability progression. Dates are intentionally not promi
 - Linux runtime verification;
 - Windows/macOS/Android/iOS compile verification.
 
-## Next — N2.1 layout semantics
+## N2.1 — Bounded flex/grid semantics (experimental)
 
-- wire owned `display:flex` and `display:grid` semantics into the layout contract;
-- keep Taffy optional and geometry-only;
-- add differential/reftest fixtures;
-- add negative/fail-closed cases;
-- promote only after conformance evidence.
+Implemented on the N2.1 development line:
+
+- owned `display:flex` and `display:grid` computed semantics;
+- owned `flex-direction`, pixel `gap`, and bounded equal-`1fr` grid column semantics;
+- neutral Altru geometry contract between layout semantics and adapters;
+- optional Taffy translation beneath that contract;
+- explicit fail-closed behavior when flex/grid requires an unavailable adapter;
+- positive, negative, equivalence, and deterministic geometry tests.
+
+This is **not** full Flexbox/Grid conformance. Standards-derived/WPT expansion remains a promotion gate.
 
 ## N3 — Scripting foundation
 

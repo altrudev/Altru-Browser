@@ -12,6 +12,7 @@ pub enum CssError {
     MalformedDeclaration(String),
     InvalidValue { property: String, value: String },
     UnresolvedCustomProperty(String),
+    UnsupportedLayout(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +73,8 @@ impl Selector {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CssValue {
     Display(String),
+    Keyword(String),
+    GridColumns(u16),
     Px(f32),
     Var(String),
     Raw(String),
@@ -202,7 +205,9 @@ pub fn parse_declarations(input: &str) -> Result<Vec<Declaration>, CssError> {
         } else {
             match property.as_str() {
                 "display" => match value {
-                    "none" | "block" | "inline" => Some(CssValue::Display(value.into())),
+                    "none" | "block" | "inline" | "flex" | "grid" => {
+                        Some(CssValue::Display(value.into()))
+                    }
                     _ => {
                         return Err(CssError::InvalidValue {
                             property,
@@ -210,8 +215,30 @@ pub fn parse_declarations(input: &str) -> Result<Vec<Declaration>, CssError> {
                         });
                     }
                 },
+                "flex-direction" => match value {
+                    "row" | "column" => Some(CssValue::Keyword(value.into())),
+                    _ => {
+                        return Err(CssError::InvalidValue {
+                            property,
+                            value: value.into(),
+                        });
+                    }
+                },
+                "grid-template-columns" => {
+                    let tracks = value.split_ascii_whitespace().collect::<Vec<_>>();
+                    if tracks.is_empty()
+                        || tracks.len() > 12
+                        || tracks.iter().any(|track| *track != "1fr")
+                    {
+                        return Err(CssError::InvalidValue {
+                            property,
+                            value: value.into(),
+                        });
+                    }
+                    Some(CssValue::GridColumns(tracks.len() as u16))
+                }
                 "font-size" | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
-                | "padding-bottom" | "padding-left" => {
+                | "padding-bottom" | "padding-left" | "gap" => {
                     if let Some(inner) =
                         value.strip_prefix("var(").and_then(|v| v.strip_suffix(')'))
                     {
@@ -335,6 +362,27 @@ mod tests {
         assert_eq!(declarations[0].property, "--text-size");
         assert!(matches!(declarations[0].value, CssValue::Raw(_)));
         assert!(matches!(declarations[1].value, CssValue::Var(_)));
+    }
+
+    #[test]
+    fn parses_bounded_flex_and_grid_declarations() {
+        let flex = parse_declarations("display: flex; flex-direction: column; gap: 12px;").unwrap();
+        assert!(matches!(flex[0].value, CssValue::Display(ref value) if value == "flex"));
+        assert!(matches!(flex[1].value, CssValue::Keyword(ref value) if value == "column"));
+        assert!(matches!(flex[2].value, CssValue::Px(value) if value == 12.0));
+
+        let grid =
+            parse_declarations("display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;")
+                .unwrap();
+        assert!(matches!(grid[1].value, CssValue::GridColumns(3)));
+    }
+
+    #[test]
+    fn rejects_unbounded_grid_track_syntax() {
+        assert!(matches!(
+            parse_declarations("grid-template-columns: 100px 1fr;"),
+            Err(CssError::InvalidValue { property, .. }) if property == "grid-template-columns"
+        ));
     }
 
     #[test]

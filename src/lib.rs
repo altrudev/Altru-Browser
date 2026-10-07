@@ -12,7 +12,6 @@ pub mod native_engine;
 pub mod native_html;
 pub mod native_invalidation;
 pub mod native_layout;
-#[cfg(feature = "taffy-layout")]
 pub mod native_layout_taffy;
 pub mod native_runtime;
 pub mod native_scene;

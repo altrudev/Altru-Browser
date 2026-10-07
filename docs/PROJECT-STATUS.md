@@ -20,6 +20,10 @@ It is not yet suitable as a production replacement for established browsers.
 
 See `evidence/native-n2-vps.md` for the current evidence snapshot.
 
+## Experimental N2.1 layout slice
+
+The development branch includes bounded Altru-owned flex/grid semantics behind a neutral geometry contract. Taffy is optional and geometry-only. Full Flexbox/Grid conformance remains unclaimed. See `evidence/native-n2-1-vps.md`.
+
 ## Explicitly not claimed
 
 - full HTML/CSS/Web API support;
