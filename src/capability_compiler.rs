@@ -860,6 +860,20 @@ mod tests {
     }
 
     #[test]
+    fn boolean_selector_preserves_attribute_commas_and_case_flags() {
+        let compiled = compile_selector_boolean_capability(
+            "img:is([sizes=auto i],[sizes^=\"auto,\" i])",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(compiled.base_selector, "img");
+        assert_eq!(
+            compiled.alternatives,
+            vec!["[sizes=auto i]", "[sizes^=\"auto,\" i]"]
+        );
+    }
+
+    #[test]
     fn interaction_state_pseudos_compile_to_acir_predicates() {
         let compiled = compile_selector_state_capability(".screen-reader-text:focus")
             .unwrap()
