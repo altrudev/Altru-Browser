@@ -847,6 +847,12 @@ mod tests {
     }
 
     #[test]
+    fn attribute_only_selector_survives_simple_selector_parser() {
+        let selector = parse_simple_selector("[sizes^=\"auto,\" i]").unwrap();
+        assert_eq!(selector.attributes.len(), 1);
+    }
+
+    #[test]
     fn attribute_only_selector_survives_full_selector_pipeline() {
         let selector = parse_selector("[sizes^=\"auto,\" i]").unwrap();
         assert_eq!(selector.attributes.len(), 1);
