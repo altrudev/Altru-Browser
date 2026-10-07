@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::interaction_state::InteractionSnapshot;
 use crate::native_css::{CssError, CssValue, Declaration, StyleSheet, parse_declarations};
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
@@ -205,6 +206,7 @@ fn resolve_element_style(
     node: NodeId,
     parent_style: &ResolvedStyle,
     sheet: &StyleSheet,
+    interaction: &InteractionSnapshot,
 ) -> Result<ResolvedStyle, CssError> {
     let Some(candidate) = document.node(node) else {
         return Ok(ResolvedStyle::initial());
@@ -219,7 +221,10 @@ fn resolve_element_style(
     let mut matching = sheet
         .rules
         .iter()
-        .filter(|rule| rule.selector.matches(document, node))
+        .filter(|rule| {
+            rule.selector
+                .matches_with_interaction(document, node, interaction)
+        })
         .collect::<Vec<_>>();
     matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
 
@@ -258,15 +263,17 @@ fn resolve_element_style(
     })
 }
 
-pub fn resolve_styles(
+pub fn resolve_styles_with_interaction(
     document: &NativeDocument,
     sheet: &StyleSheet,
+    interaction: &InteractionSnapshot,
 ) -> Result<Vec<ResolvedStyle>, CssError> {
     let mut styles = vec![ResolvedStyle::initial(); document.nodes().len()];
 
     fn walk(
         document: &NativeDocument,
         sheet: &StyleSheet,
+        interaction: &InteractionSnapshot,
         node: NodeId,
         parent_style: &ResolvedStyle,
         styles: &mut [ResolvedStyle],
@@ -284,19 +291,35 @@ pub fn resolve_styles(
                 inherited.custom_properties = parent_style.custom_properties.clone();
                 inherited
             }
-            NodeKind::Element { .. } => resolve_element_style(document, node, parent_style, sheet)?,
+            NodeKind::Element { .. } => {
+                resolve_element_style(document, node, parent_style, sheet, interaction)?
+            }
         };
         styles[node] = style.clone();
 
         for child in &candidate.children {
-            walk(document, sheet, *child, &style, styles)?;
+            walk(document, sheet, interaction, *child, &style, styles)?;
         }
         Ok(())
     }
 
     let initial = ResolvedStyle::initial();
-    walk(document, sheet, document.root(), &initial, &mut styles)?;
+    walk(
+        document,
+        sheet,
+        interaction,
+        document.root(),
+        &initial,
+        &mut styles,
+    )?;
     Ok(styles)
+}
+
+pub fn resolve_styles(
+    document: &NativeDocument,
+    sheet: &StyleSheet,
+) -> Result<Vec<ResolvedStyle>, CssError> {
+    resolve_styles_with_interaction(document, sheet, &InteractionSnapshot::default())
 }
 
 #[cfg(test)]
@@ -387,6 +410,37 @@ mod tests {
             .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "span"))
             .unwrap();
         assert_eq!(styles[span.id].computed.font_size_px, 30.0);
+    }
+
+    #[test]
+    fn interaction_snapshot_changes_computed_style_only_when_state_is_true() {
+        let document = parse_document(
+            "<html><body><a class=\"skip\">Skip</a></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".skip { font-size: 16px; } .skip:focus { font-size: 24px; }",
+        )
+        .unwrap();
+        let link = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("skip"))
+            .unwrap();
+
+        let idle = resolve_styles(&document, &sheet).unwrap();
+        assert_eq!(idle[link.id].computed.font_size_px, 16.0);
+
+        let focused = resolve_styles_with_interaction(
+            &document,
+            &sheet,
+            &InteractionSnapshot {
+                focused_node: Some(link.id),
+                ..InteractionSnapshot::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(focused[link.id].computed.font_size_px, 24.0);
     }
 
     #[test]

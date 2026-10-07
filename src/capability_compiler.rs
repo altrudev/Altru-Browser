@@ -7,13 +7,14 @@ use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirLengthBasis, AcirMediaType, AcirRelativeLength, AcirSelectorChain, AcirSelectorRelation,
-    CapabilityEnvironment,
+    AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirRelativeLength,
+    AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
 pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
 pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
+pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +47,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_RELATIONS_V1,
         source_family: "css-selector-relations",
         target_semantics: "acir.selector-chain",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_INTERACTION_V1,
+        source_family: "css-selector-interaction-state",
+        target_semantics: "acir.interaction-predicate",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -87,6 +94,13 @@ pub struct CompiledCapabilitySource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledSelectorCapability {
     pub chain: AcirSelectorChain,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledSelectorStateCapability {
+    pub base_selector: String,
+    pub predicates: Vec<AcirInteractionPredicate>,
     pub receipt: TranslationReceipt,
 }
 
@@ -502,6 +516,53 @@ fn parse_selector_chain(
     Ok(Some(chain))
 }
 
+pub fn compile_selector_state_capability(
+    input: &str,
+) -> Result<Option<CompiledSelectorStateCapability>, CapabilityCompilerError> {
+    let mut base = input.trim().to_string();
+    let mut predicates = Vec::new();
+
+    loop {
+        let normalized = base.to_ascii_lowercase();
+        let matched = [
+            (":focus-within", AcirInteractionPredicate::FocusWithin),
+            (":focus", AcirInteractionPredicate::Focus),
+            (":hover", AcirInteractionPredicate::Hover),
+            (":active", AcirInteractionPredicate::Active),
+        ]
+        .into_iter()
+        .find(|(suffix, _)| normalized.ends_with(suffix));
+
+        let Some((suffix, predicate)) = matched else {
+            break;
+        };
+        let new_len = base.len().saturating_sub(suffix.len());
+        base.truncate(new_len);
+        base = base.trim_end().to_string();
+        predicates.push(predicate);
+    }
+
+    if predicates.is_empty() {
+        return Ok(None);
+    }
+    if base.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    require_verified(CSS_SELECTOR_INTERACTION_V1)?;
+    predicates.reverse();
+
+    Ok(Some(CompiledSelectorStateCapability {
+        base_selector: base,
+        predicates,
+        receipt: TranslationReceipt {
+            translation_id: CSS_SELECTOR_INTERACTION_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
 pub fn compile_selector_capability(
     input: &str,
 ) -> Result<Option<CompiledSelectorCapability>, CapabilityCompilerError> {
@@ -639,6 +700,35 @@ mod tests {
             compiled.receipt.translation_id,
             CSS_SELECTOR_DESCENDANT_V1
         );
+    }
+
+    #[test]
+    fn interaction_state_pseudos_compile_to_acir_predicates() {
+        let compiled = compile_selector_state_capability(".screen-reader-text:focus")
+            .unwrap()
+            .unwrap();
+        assert_eq!(compiled.base_selector, ".screen-reader-text");
+        assert_eq!(compiled.predicates, vec![AcirInteractionPredicate::Focus]);
+        assert_eq!(
+            compiled.receipt.translation_id,
+            CSS_SELECTOR_INTERACTION_V1
+        );
+
+        let combined = compile_selector_state_capability(".x:hover:active")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            combined.predicates,
+            vec![
+                AcirInteractionPredicate::Hover,
+                AcirInteractionPredicate::Active
+            ]
+        );
+    }
+
+    #[test]
+    fn state_only_selector_is_not_silently_generalized() {
+        assert!(compile_selector_state_capability(":focus").is_err());
     }
 
     #[test]
