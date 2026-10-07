@@ -79,6 +79,7 @@ pub struct CompiledSelectorCapability {
 pub enum CapabilityCompilerError {
     MalformedAtRule,
     UnsupportedMediaQuery(String),
+    UnsupportedSelector(String),
     UnverifiedTranslation(String),
 }
 
@@ -334,19 +335,19 @@ fn split_top_level_descendants(input: &str) -> Result<Vec<&str>, CapabilityCompi
             '[' => bracket_depth = bracket_depth.saturating_add(1),
             ']' => {
                 if bracket_depth == 0 {
-                    return Err(CapabilityCompilerError::UnsupportedMediaQuery(input.into()));
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
                 }
                 bracket_depth -= 1;
             }
             '(' => paren_depth = paren_depth.saturating_add(1),
             ')' => {
                 if paren_depth == 0 {
-                    return Err(CapabilityCompilerError::UnsupportedMediaQuery(input.into()));
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
                 }
                 paren_depth -= 1;
             }
             '>' | '+' | '~' if bracket_depth == 0 && paren_depth == 0 => {
-                return Err(CapabilityCompilerError::UnsupportedMediaQuery(input.into()));
+                return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
             }
             ch if ch.is_whitespace() && bracket_depth == 0 && paren_depth == 0 => {
                 if !in_separator {
@@ -366,7 +367,7 @@ fn split_top_level_descendants(input: &str) -> Result<Vec<&str>, CapabilityCompi
     }
 
     if quote.is_some() || bracket_depth != 0 || paren_depth != 0 {
-        return Err(CapabilityCompilerError::UnsupportedMediaQuery(input.into()));
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
     }
 
     if !in_separator {
@@ -394,7 +395,7 @@ pub fn compile_selector_capability(
         combinators: vec![AcirSelectorCombinator::Descendant; parts.len() - 1],
     };
     if !chain.is_well_formed() {
-        return Err(CapabilityCompilerError::MalformedAtRule);
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
     }
 
     Ok(Some(CompiledSelectorCapability {
