@@ -83,6 +83,103 @@ impl NativeDocument {
         self.append(parent, NodeKind::Text(text.into()), Vec::new())
     }
 
+    pub fn element_parent(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.node(node)?.parent?;
+        matches!(self.node(parent)?.kind, NodeKind::Element { .. }).then_some(parent)
+    }
+
+    pub fn element_children(&self, node: NodeId) -> Vec<NodeId> {
+        self.node(node)
+            .map(|candidate| {
+                candidate
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|child| {
+                        matches!(
+                            self.node(*child).map(|node| &node.kind),
+                            Some(NodeKind::Element { .. })
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn previous_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.node(node)?.parent?;
+        let siblings = &self.node(parent)?.children;
+        let position = siblings.iter().position(|candidate| *candidate == node)?;
+        siblings[..position]
+            .iter()
+            .rev()
+            .copied()
+            .find(|candidate| {
+                matches!(
+                    self.node(*candidate).map(|node| &node.kind),
+                    Some(NodeKind::Element { .. })
+                )
+            })
+    }
+
+    pub fn next_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.node(node)?.parent?;
+        let siblings = &self.node(parent)?.children;
+        let position = siblings.iter().position(|candidate| *candidate == node)?;
+        siblings[position + 1..]
+            .iter()
+            .copied()
+            .find(|candidate| {
+                matches!(
+                    self.node(*candidate).map(|node| &node.kind),
+                    Some(NodeKind::Element { .. })
+                )
+            })
+    }
+
+    pub fn previous_element_siblings(&self, node: NodeId) -> Vec<NodeId> {
+        let Some(parent) = self.node(node).and_then(|candidate| candidate.parent) else {
+            return Vec::new();
+        };
+        let Some(parent_node) = self.node(parent) else {
+            return Vec::new();
+        };
+        let Some(position) = parent_node.children.iter().position(|candidate| *candidate == node)
+        else {
+            return Vec::new();
+        };
+        parent_node.children[..position]
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                matches!(
+                    self.node(*candidate).map(|node| &node.kind),
+                    Some(NodeKind::Element { .. })
+                )
+            })
+            .collect()
+    }
+
+    pub fn element_index(&self, node: NodeId) -> Option<usize> {
+        let parent = self.node(node)?.parent?;
+        self.element_children(parent)
+            .iter()
+            .position(|candidate| *candidate == node)
+            .map(|index| index + 1)
+    }
+
+    pub fn ancestor_elements(&self, node: NodeId) -> Vec<NodeId> {
+        let mut ancestors = Vec::new();
+        let mut current = self.node(node).and_then(|candidate| candidate.parent);
+        while let Some(id) = current {
+            if matches!(self.node(id).map(|node| &node.kind), Some(NodeKind::Element { .. })) {
+                ancestors.push(id);
+            }
+            current = self.node(id).and_then(|candidate| candidate.parent);
+        }
+        ancestors
+    }
+
     pub fn attribute(&self, node: NodeId, name: &str) -> Option<&str> {
         self.node(node)?
             .attributes
@@ -206,6 +303,25 @@ mod tests {
         let text_change = document.replace_text(text, "new").unwrap();
         assert!(!text_change.style);
         assert!(text_change.layout && text_change.paint);
+    }
+
+    #[test]
+    fn relation_pack_exposes_element_tree_semantics() {
+        let mut document = NativeDocument::new();
+        let body = document.append_element(document.root(), "body").unwrap();
+        let first = document.append_element(body, "p").unwrap();
+        document.append_text(body, "text").unwrap();
+        let second = document.append_element(body, "section").unwrap();
+        let child = document.append_element(second, "span").unwrap();
+
+        assert_eq!(document.element_parent(child), Some(second));
+        assert_eq!(document.element_children(body), vec![first, second]);
+        assert_eq!(document.previous_element_sibling(second), Some(first));
+        assert_eq!(document.next_element_sibling(first), Some(second));
+        assert_eq!(document.previous_element_siblings(second), vec![first]);
+        assert_eq!(document.element_index(first), Some(1));
+        assert_eq!(document.element_index(second), Some(2));
+        assert_eq!(document.ancestor_elements(child), vec![second, body]);
     }
 
     #[test]
