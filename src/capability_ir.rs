@@ -30,6 +30,14 @@ pub enum AcirMediaType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirInteractionPredicate {
+    Focus,
+    FocusWithin,
+    Hover,
+    Active,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirSelectorRelation {
     Descendant,
     Child,
@@ -173,6 +181,15 @@ mod tests {
             ],
         };
         assert!(environment.evaluate_condition(&condition));
+    }
+
+    #[test]
+    fn interaction_predicates_are_explicit_semantics() {
+        assert_ne!(AcirInteractionPredicate::Focus, AcirInteractionPredicate::Hover);
+        assert_ne!(
+            AcirInteractionPredicate::FocusWithin,
+            AcirInteractionPredicate::Active
+        );
     }
 
     #[test]
