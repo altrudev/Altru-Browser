@@ -6,10 +6,11 @@
 use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
-    AcirComparison, AcirEnvironmentFeature, AcirEnvironmentPredicate, CapabilityEnvironment,
+    AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
+    AcirMediaType, CapabilityEnvironment,
 };
 
-pub const CSS_MEDIA_RESOLUTION_V1: &str = "css.media-resolution.v1";
+pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -25,9 +26,9 @@ pub struct TranslationSpec {
 }
 
 pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[TranslationSpec {
-    id: CSS_MEDIA_RESOLUTION_V1,
-    source_family: "css-media-resolution",
-    target_semantics: "acir.environment-predicate",
+    id: CSS_MEDIA_ENVIRONMENT_V1,
+    source_family: "css-media-environment",
+    target_semantics: "acir.environment-condition",
     status: TranslationStatus::Verified,
 }];
 
@@ -81,48 +82,192 @@ fn require_verified(id: &str) -> Result<(), CapabilityCompilerError> {
     }
 }
 
+fn parse_decimal_milli(raw: &str) -> Result<u32, CapabilityCompilerError> {
+    let raw = raw.trim();
+    let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+    if whole.is_empty()
+        || !whole.chars().all(|ch| ch.is_ascii_digit())
+        || !fraction.chars().all(|ch| ch.is_ascii_digit())
+        || fraction.len() > 3
+    {
+        return Err(CapabilityCompilerError::UnsupportedMediaQuery(raw.into()));
+    }
+    let whole = whole
+        .parse::<u32>()
+        .map_err(|_| CapabilityCompilerError::UnsupportedMediaQuery(raw.into()))?;
+    let mut fraction_milli = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<u32>()
+            .map_err(|_| CapabilityCompilerError::UnsupportedMediaQuery(raw.into()))?
+    };
+    for _ in fraction.len()..3 {
+        fraction_milli = fraction_milli.saturating_mul(10);
+    }
+    whole
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_add(fraction_milli))
+        .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(raw.into()))
+}
+
 fn parse_resolution_milli_dpi(raw: &str) -> Result<u32, CapabilityCompilerError> {
     let raw = raw.trim().to_ascii_lowercase();
     if let Some(number) = raw.strip_suffix("dpi") {
-        let value = number
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| CapabilityCompilerError::UnsupportedMediaQuery(raw.clone()))?;
-        return value
-            .checked_mul(1_000)
-            .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(raw));
+        return parse_decimal_milli(number);
     }
     if let Some(number) = raw.strip_suffix("dppx") {
-        let value = number
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| CapabilityCompilerError::UnsupportedMediaQuery(raw.clone()))?;
-        return value
-            .checked_mul(96_000)
+        let milli_dppx = parse_decimal_milli(number)?;
+        return milli_dppx
+            .checked_mul(96)
             .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(raw));
     }
     Err(CapabilityCompilerError::UnsupportedMediaQuery(raw))
 }
 
-fn lower_media_query(raw: &str) -> Result<AcirEnvironmentPredicate, CapabilityCompilerError> {
-    require_verified(CSS_MEDIA_RESOLUTION_V1)?;
-    let query = raw.trim();
-    let query = query
+fn parse_width_milli_px(raw: &str) -> Result<u32, CapabilityCompilerError> {
+    let raw = raw.trim().to_ascii_lowercase();
+    let Some(number) = raw.strip_suffix("px") else {
+        return Err(CapabilityCompilerError::UnsupportedMediaQuery(raw));
+    };
+    parse_decimal_milli(number)
+}
+
+fn parse_parenthesized_predicate(
+    raw: &str,
+) -> Result<AcirEnvironmentPredicate, CapabilityCompilerError> {
+    let raw = raw.trim();
+    let inner = raw
         .strip_prefix('(')
         .and_then(|value| value.strip_suffix(')'))
-        .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(query.into()))?;
-    let (feature, value) = query
+        .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(raw.into()))?
+        .trim();
+
+    if inner.eq_ignore_ascii_case("prefers-reduced-motion") {
+        return Ok(AcirEnvironmentPredicate {
+            feature: AcirEnvironmentFeature::PrefersReducedMotionFlag,
+            comparison: AcirComparison::AtLeast,
+            value: 1,
+        });
+    }
+
+    let (feature, value) = inner
         .split_once(':')
-        .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(query.into()))?;
-    let comparison = match feature.trim().to_ascii_lowercase().as_str() {
-        "min-resolution" => AcirComparison::AtLeast,
-        "max-resolution" => AcirComparison::AtMost,
-        _ => return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into())),
+        .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(inner.into()))?;
+    let feature = feature.trim().to_ascii_lowercase();
+    let (environment_feature, comparison, parsed_value) = match feature.as_str() {
+        "min-resolution" => (
+            AcirEnvironmentFeature::ResolutionMilliDpi,
+            AcirComparison::AtLeast,
+            parse_resolution_milli_dpi(value)?,
+        ),
+        "max-resolution" => (
+            AcirEnvironmentFeature::ResolutionMilliDpi,
+            AcirComparison::AtMost,
+            parse_resolution_milli_dpi(value)?,
+        ),
+        "min-width" => (
+            AcirEnvironmentFeature::ViewportWidthMilliPx,
+            AcirComparison::AtLeast,
+            parse_width_milli_px(value)?,
+        ),
+        "max-width" => (
+            AcirEnvironmentFeature::ViewportWidthMilliPx,
+            AcirComparison::AtMost,
+            parse_width_milli_px(value)?,
+        ),
+        _ => return Err(CapabilityCompilerError::UnsupportedMediaQuery(inner.into())),
     };
+
     Ok(AcirEnvironmentPredicate {
-        feature: AcirEnvironmentFeature::ResolutionMilliDpi,
+        feature: environment_feature,
         comparison,
-        value: parse_resolution_milli_dpi(value)?,
+        value: parsed_value,
+    })
+}
+
+fn split_top_level_and(query: &str) -> Result<Vec<&str>, CapabilityCompilerError> {
+    let bytes = query.as_bytes();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut parts = Vec::new();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' => depth += 1,
+            b')' => {
+                if depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into()));
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+
+        if depth == 0
+            && index + 5 <= bytes.len()
+            && query[index..index + 5].eq_ignore_ascii_case(" and ")
+        {
+            parts.push(query[start..index].trim());
+            start = index + 5;
+            index += 5;
+            continue;
+        }
+        index += 1;
+    }
+
+    if depth != 0 {
+        return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into()));
+    }
+    parts.push(query[start..].trim());
+    Ok(parts)
+}
+
+fn lower_media_query(
+    raw: &str,
+) -> Result<AcirEnvironmentCondition, CapabilityCompilerError> {
+    require_verified(CSS_MEDIA_ENVIRONMENT_V1)?;
+    let query = raw.trim();
+    if query.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into()));
+    }
+
+    if let Some(predicate) = query
+        .strip_prefix("not ")
+        .or_else(|| query.strip_prefix("NOT "))
+    {
+        let predicate = parse_parenthesized_predicate(predicate)?;
+        if predicate.feature != AcirEnvironmentFeature::PrefersReducedMotionFlag {
+            return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into()));
+        }
+        return Ok(AcirEnvironmentCondition {
+            media_type: None,
+            predicates: vec![AcirEnvironmentPredicate {
+                comparison: AcirComparison::AtMost,
+                value: 0,
+                ..predicate
+            }],
+        });
+    }
+
+    let mut media_type = None;
+    let mut predicates = Vec::new();
+    for part in split_top_level_and(query)? {
+        if part.eq_ignore_ascii_case("screen") {
+            media_type = Some(AcirMediaType::Screen);
+        } else {
+            predicates.push(parse_parenthesized_predicate(part)?);
+        }
+    }
+
+    if media_type.is_none() && predicates.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into()));
+    }
+
+    Ok(AcirEnvironmentCondition {
+        media_type,
+        predicates,
     })
 }
 
@@ -173,16 +318,16 @@ pub fn compile_stylesheet_capabilities(
         let open = header_start + open_relative;
         let close = matching_brace(input, open)?;
         let query = input[header_start..open].trim();
-        let predicate = lower_media_query(query)?;
+        let condition = lower_media_query(query)?;
         let source_construct = &input[media_start..=close];
-        let decision = if environment.evaluate(predicate) {
+        let decision = if environment.evaluate_condition(&condition) {
             output.push_str(&input[open + 1..close]);
             TranslationDecision::Admitted
         } else {
             TranslationDecision::Elided
         };
         receipts.push(TranslationReceipt {
-            translation_id: CSS_MEDIA_RESOLUTION_V1.into(),
+            translation_id: CSS_MEDIA_ENVIRONMENT_V1.into(),
             source_sha256: sha256(source_construct),
             decision,
         });
@@ -201,27 +346,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn min_resolution_media_query_lowers_and_elides() {
-        let compiled = compile_stylesheet_capabilities(
-            "@media (min-resolution:192dpi) { p { font-size: 20px; } } h1 { font-size: 24px; }",
-            CapabilityEnvironment::new(96_000),
-        )
-        .unwrap();
-        assert!(!compiled.source.contains("p {"));
-        assert!(compiled.source.contains("h1 {"));
-        assert_eq!(compiled.receipts.len(), 1);
-        assert_eq!(compiled.receipts[0].decision, TranslationDecision::Elided);
+    fn observed_cnet_media_vocabulary_lowers_through_one_acir_family() {
+        let samples = [
+            "( max-width: 767.98px )",
+            "( min-width: 768px ) and ( max-width: 991.98px )",
+            "( min-width: 992px )",
+            "(max-width: 639px)",
+            "(max-width:781px)",
+            "(min-resolution:192dpi)",
+            "(min-width: 640px)",
+            "(min-width:782px)",
+            "not (prefers-reduced-motion)",
+            "screen and (max-width:600px)",
+        ];
+        for query in samples {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            let compiled =
+                compile_stylesheet_capabilities(&css, CapabilityEnvironment::desktop(800))
+                    .unwrap();
+            assert_eq!(compiled.receipts.len(), 1, "{query}");
+        }
     }
 
     #[test]
-    fn min_resolution_media_query_admits_body_when_true() {
-        let compiled = compile_stylesheet_capabilities(
-            "@media (min-resolution:192dpi) { p { font-size: 20px; } }",
-            CapabilityEnvironment::new(192_000),
+    fn width_and_resolution_conditions_admit_or_elide_deterministically() {
+        let environment = CapabilityEnvironment::desktop(800);
+
+        let narrow = compile_stylesheet_capabilities(
+            "@media (max-width:600px) { p { font-size: 20px; } }",
+            environment,
         )
         .unwrap();
-        assert!(compiled.source.contains("p { font-size: 20px; }"));
-        assert_eq!(compiled.receipts[0].decision, TranslationDecision::Admitted);
+        assert_eq!(narrow.receipts[0].decision, TranslationDecision::Elided);
+
+        let desktop = compile_stylesheet_capabilities(
+            "@media (min-width:768px) { p { font-size: 20px; } }",
+            environment,
+        )
+        .unwrap();
+        assert_eq!(desktop.receipts[0].decision, TranslationDecision::Admitted);
+
+        let hi_dpi = compile_stylesheet_capabilities(
+            "@media (min-resolution:192dpi) { p { font-size: 20px; } }",
+            environment,
+        )
+        .unwrap();
+        assert_eq!(hi_dpi.receipts[0].decision, TranslationDecision::Elided);
     }
 
     #[test]
