@@ -3,6 +3,10 @@
 //! This is deliberately a bounded CSS subset. Unsupported selectors fail
 //! closed; unknown properties follow CSS error handling and are ignored.
 
+use crate::capability_compiler::{
+    CapabilityCompilerError, TranslationReceipt, compile_stylesheet_capabilities,
+};
+use crate::capability_ir::CapabilityEnvironment;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +17,13 @@ pub enum CssError {
     InvalidValue { property: String, value: String },
     UnresolvedCustomProperty(String),
     UnsupportedLayout(String),
+    CapabilityCompiler(CapabilityCompilerError),
+}
+
+impl From<CapabilityCompilerError> for CssError {
+    fn from(value: CapabilityCompilerError) -> Self {
+        Self::CapabilityCompiler(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +168,12 @@ pub struct Rule {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StyleSheet {
     pub rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledStyleSheet {
+    pub stylesheet: StyleSheet,
+    pub translations: Vec<TranslationReceipt>,
 }
 
 fn parse_attribute_selector(input: &str) -> Result<AttributeSelector, CssError> {
@@ -494,10 +511,9 @@ fn strip_css_comments(input: &str) -> Result<String, CssError> {
     Ok(output)
 }
 
-pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
-    let cleaned = strip_css_comments(input)?;
+fn parse_compiled_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
     let mut rules = Vec::new();
-    let mut rest = cleaned.as_str();
+    let mut rest = input;
     let mut order = 0usize;
 
     while !rest.trim().is_empty() {
@@ -523,7 +539,27 @@ pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
     Ok(StyleSheet { rules })
 }
 
-pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet, CssError> {
+pub fn parse_stylesheet_with_environment(
+    input: &str,
+    environment: CapabilityEnvironment,
+) -> Result<CompiledStyleSheet, CssError> {
+    let cleaned = strip_css_comments(input)?;
+    let compiled = compile_stylesheet_capabilities(&cleaned, environment)?;
+    let stylesheet = parse_compiled_stylesheet(&compiled.source)?;
+    Ok(CompiledStyleSheet {
+        stylesheet,
+        translations: compiled.receipts,
+    })
+}
+
+pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
+    Ok(
+        parse_stylesheet_with_environment(input, CapabilityEnvironment::default())?
+            .stylesheet,
+    )
+}
+
+fn document_style_source(document: &NativeDocument) -> String {
     let mut combined = String::new();
     for node in document.nodes() {
         if matches!(&node.kind, NodeKind::Element { tag } if tag == "style") {
@@ -539,7 +575,21 @@ pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet,
             }
         }
     }
-    parse_stylesheet(&combined)
+    combined
+}
+
+pub fn stylesheet_from_document_with_environment(
+    document: &NativeDocument,
+    environment: CapabilityEnvironment,
+) -> Result<CompiledStyleSheet, CssError> {
+    parse_stylesheet_with_environment(&document_style_source(document), environment)
+}
+
+pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet, CssError> {
+    Ok(
+        stylesheet_from_document_with_environment(document, CapabilityEnvironment::default())?
+            .stylesheet,
+    )
 }
 
 #[cfg(test)]
@@ -678,6 +728,26 @@ mod tests {
             parse_declarations("grid-template-columns: 100px 1fr;"),
             Err(CssError::InvalidValue { property, .. }) if property == "grid-template-columns"
         ));
+    }
+
+    #[test]
+    fn media_resolution_is_lowered_before_selector_parsing() {
+        let compiled = parse_stylesheet_with_environment(
+            "@media (min-resolution:192dpi) { p { font-size: 20px; } } h1 { font-size: 24px; }",
+            CapabilityEnvironment::new(96_000),
+        )
+        .unwrap();
+        assert_eq!(compiled.stylesheet.rules.len(), 1);
+        assert_eq!(compiled.stylesheet.rules[0].selector.tag.as_deref(), Some("h1"));
+        assert_eq!(compiled.translations.len(), 1);
+    }
+
+    #[test]
+    fn unsupported_media_query_remains_fail_closed() {
+        let result = parse_stylesheet(
+            "@media (prefers-color-scheme:dark) { p { font-size: 20px; } }",
+        );
+        assert!(matches!(result, Err(CssError::CapabilityCompiler(_))));
     }
 
     #[test]
