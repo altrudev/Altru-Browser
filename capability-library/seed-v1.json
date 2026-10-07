@@ -1,0 +1,656 @@
+{
+  "schema": "altru.capability-library.seed.v1",
+  "generated_from": "DDC/Frequency full sweep",
+  "policy": {
+    "default_runtime_action": "fail_closed",
+    "telemetry": "none",
+    "external_models": "none",
+    "promotion_requires": [
+      "bounded_semantics",
+      "positive_tests",
+      "negative_tests",
+      "provenance",
+      "translation_receipt"
+    ]
+  },
+  "source_classes": [
+    {
+      "id": "web-features",
+      "role": "stable_feature_namespace"
+    },
+    {
+      "id": "mdn-bcd",
+      "role": "feature_inventory_and_spec_links"
+    },
+    {
+      "id": "wpt",
+      "role": "primary_executable_semantic_oracle"
+    },
+    {
+      "id": "whatwg-static",
+      "role": "normative_or_static_machine_readable_data"
+    }
+  ],
+  "families": [
+    {
+      "id": "html.named-character-references",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L0",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR literal text",
+      "dependencies": [],
+      "notes": "Import complete named-character table instead of adding entities reactively."
+    },
+    {
+      "id": "html.numeric-character-references",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L0",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR literal text",
+      "dependencies": [],
+      "notes": "Decimal/hex decoding + invalid-code-point recovery corpus."
+    },
+    {
+      "id": "html.raw-text-elements",
+      "priority": "A",
+      "state": "implemented",
+      "repair": "L0",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "HTML tokenizer states",
+      "dependencies": [],
+      "notes": "Generalize script/style behavior to full bounded raw-text/RCDATA families."
+    },
+    {
+      "id": "html.void-elements",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L0",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "DOM construction flags",
+      "dependencies": [],
+      "notes": "Static element family; ideal table-driven translation."
+    },
+    {
+      "id": "html.optional-end-tags",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "DOM tree repair",
+      "dependencies": [],
+      "notes": "High compatibility value; must be WPT-bound."
+    },
+    {
+      "id": "html.boolean-attributes",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L0",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR attribute presence semantics",
+      "dependencies": [],
+      "notes": "checked/disabled/hidden/etc. syntax normalization only; live state handled separately."
+    },
+    {
+      "id": "html.url-valued-attributes",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "URL resolution primitive",
+      "dependencies": [
+        "url.standard"
+      ],
+      "notes": "href/src/action/formaction/poster-style attribute resolution."
+    },
+    {
+      "id": "url.standard-resolution",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR URL record",
+      "dependencies": [],
+      "notes": "Relative URL resolution, dot segments, query/fragment handling; no network authority implied."
+    },
+    {
+      "id": "http.redirect-status-semantics",
+      "priority": "A",
+      "state": "implemented",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "navigation transition",
+      "dependencies": [
+        "url.standard-resolution"
+      ],
+      "notes": "Prebuild 301/302/303/307/308 semantics separately from redirect permission."
+    },
+    {
+      "id": "http.content-type-routing",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "document type classification",
+      "dependencies": [],
+      "notes": "MIME routing table; unsupported types remain blocked."
+    },
+    {
+      "id": "css.selector.descendant",
+      "priority": "A",
+      "state": "promoted",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR selector chain",
+      "dependencies": [],
+      "notes": "Already verified."
+    },
+    {
+      "id": "css.selector.child",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR selector relation",
+      "dependencies": [
+        "dom.parent-relations"
+      ],
+      "notes": "Direct-parent relation is deterministic and cheap."
+    },
+    {
+      "id": "css.selector.adjacent-sibling",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR selector relation",
+      "dependencies": [
+        "dom.sibling-relations"
+      ],
+      "notes": "Deterministic DOM relation."
+    },
+    {
+      "id": "css.selector.general-sibling",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR selector relation",
+      "dependencies": [
+        "dom.sibling-relations"
+      ],
+      "notes": "Deterministic DOM relation."
+    },
+    {
+      "id": "css.selector.not-where-is",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR selector boolean composition",
+      "dependencies": [],
+      "notes": "Unify functional selector logic and specificity rules."
+    },
+    {
+      "id": "css.selector.attribute-operators",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR attribute predicate",
+      "dependencies": [],
+      "notes": "Add ~=, |=, $=, *= and case flags to existing =/^= model."
+    },
+    {
+      "id": "css.selector.structural-pseudos",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR tree-position predicate",
+      "dependencies": [
+        "dom.sibling-relations"
+      ],
+      "notes": "first/last/only-child, nth-child family."
+    },
+    {
+      "id": "css.selector.interaction-pseudos",
+      "priority": "B",
+      "state": "state-bound",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR interaction predicate",
+      "dependencies": [
+        "interaction.snapshot"
+      ],
+      "notes": "focus, focus-within, hover, active; current live blocker begins here."
+    },
+    {
+      "id": "css.selector-form-state-pseudos",
+      "priority": "B",
+      "state": "state-bound",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR control-state predicate",
+      "dependencies": [
+        "form.control-state"
+      ],
+      "notes": "checked, disabled, enabled, required, optional, valid, invalid."
+    },
+    {
+      "id": "css.media.environment",
+      "priority": "A",
+      "state": "promoted",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR environment condition",
+      "dependencies": [],
+      "notes": "Already verified; expand table-driven predicates."
+    },
+    {
+      "id": "css.media.color-and-pointer",
+      "priority": "B",
+      "state": "state-bound",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR environment condition",
+      "dependencies": [
+        "environment.snapshot"
+      ],
+      "notes": "prefers-color-scheme, pointer, hover, orientation, color-gamut."
+    },
+    {
+      "id": "css.length.absolute",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR absolute length",
+      "dependencies": [],
+      "notes": "px plus deterministic absolute units where CSS defines fixed conversion."
+    },
+    {
+      "id": "css.length.font-relative",
+      "priority": "A",
+      "state": "implemented",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR relative length",
+      "dependencies": [
+        "style.inheritance"
+      ],
+      "notes": "em promoted; prebuild rem, ex/ch only where basis is explicitly represented."
+    },
+    {
+      "id": "css.length.viewport-relative",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR environment-relative length",
+      "dependencies": [
+        "environment.snapshot"
+      ],
+      "notes": "vw/vh/vmin/vmax and newer viewport variants."
+    },
+    {
+      "id": "css.percentage-values",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR percentage with property-specific basis",
+      "dependencies": [
+        "layout.containing-block"
+      ],
+      "notes": "Do not create one generic percentage conversion; basis is property dependent."
+    },
+    {
+      "id": "css.color.named-and-hex",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L0",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR color",
+      "dependencies": [],
+      "notes": "Static tables + #rgb/#rgba/#rrggbb/#rrggbbaa."
+    },
+    {
+      "id": "css.color.rgb-hsl",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR color",
+      "dependencies": [],
+      "notes": "Deterministic numeric conversion."
+    },
+    {
+      "id": "css.custom-properties",
+      "priority": "A",
+      "state": "implemented",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "style variable graph",
+      "dependencies": [],
+      "notes": "Expand var() fallback and cycle handling with WPT corpus."
+    },
+    {
+      "id": "css.calc-basic",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR numeric expression",
+      "dependencies": [
+        "css.length.*"
+      ],
+      "notes": "Preparse +,-,*,/ with dimensional checks; large coverage gain."
+    },
+    {
+      "id": "css.display-keywords",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "layout display role",
+      "dependencies": [],
+      "notes": "Table-driven keyword normalization before deeper layout algorithms."
+    },
+    {
+      "id": "css.box-shorthand",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L0",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "longhand declarations",
+      "dependencies": [],
+      "notes": "margin/padding 1-4 value expansion is ideal syntax lowering."
+    },
+    {
+      "id": "css.border-shorthand",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "longhand declarations",
+      "dependencies": [
+        "css.color.*"
+      ],
+      "notes": "Parse width/style/color; renderer can ignore unimplemented paint components explicitly."
+    },
+    {
+      "id": "css.font-shorthand",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "font longhands",
+      "dependencies": [
+        "css.length.font-relative"
+      ],
+      "notes": "High-value but grammar is broader; bind tightly to WPT."
+    },
+    {
+      "id": "css.background-shorthand",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "background layer IR",
+      "dependencies": [
+        "css.color.*",
+        "resource.images"
+      ],
+      "notes": "Can parse before image fetching exists."
+    },
+    {
+      "id": "css.cascade-important-origin",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "cascade precedence tuple",
+      "dependencies": [],
+      "notes": "Major correctness primitive; deterministic."
+    },
+    {
+      "id": "css.inheritance-keywords",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "style inheritance operation",
+      "dependencies": [],
+      "notes": "inherit/initial/unset/revert family can be represented canonically."
+    },
+    {
+      "id": "dom.tree-relations",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR DOM relation primitives",
+      "dependencies": [],
+      "notes": "parent/ancestor/sibling/index/element-child predicates support many selectors."
+    },
+    {
+      "id": "form.control-state",
+      "priority": "B",
+      "state": "state-bound",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR form state",
+      "dependencies": [
+        "interaction.snapshot"
+      ],
+      "notes": "State model can be prebuilt before full form submission support."
+    },
+    {
+      "id": "interaction.snapshot",
+      "priority": "B",
+      "state": "native-bound",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "ACIR interaction snapshot",
+      "dependencies": [],
+      "notes": "Focused node, hover chain, active node, keyboard modality."
+    },
+    {
+      "id": "accessibility.aria-static",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "accessibility semantic properties",
+      "dependencies": [],
+      "notes": "Static role/state/property normalization; platform accessibility API export is separate."
+    },
+    {
+      "id": "accessibility.html-role-mapping",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "accessibility role IR",
+      "dependencies": [
+        "accessibility.aria-static"
+      ],
+      "notes": "Can bind to HTML-AAM/ARIA tests without changing page authority."
+    },
+    {
+      "id": "svg.basic-shapes",
+      "priority": "B",
+      "state": "native-bound",
+      "repair": "L3",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "vector scene primitives",
+      "dependencies": [
+        "paint.vector"
+      ],
+      "notes": "rect/circle/ellipse/line/polyline/polygon/path subset."
+    },
+    {
+      "id": "svg.presentation-attributes",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "style declarations",
+      "dependencies": [
+        "svg.basic-shapes"
+      ],
+      "notes": "Many attributes lower directly into style/paint semantics."
+    },
+    {
+      "id": "resource.srcset-sizes",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L2",
+      "risk": "medium",
+      "prebuild_now": true,
+      "target": "resource candidate selection",
+      "dependencies": [
+        "environment.snapshot",
+        "resource.images"
+      ],
+      "notes": "Selection semantics can be prebuilt even before broad image decoding."
+    },
+    {
+      "id": "resource.data-urls",
+      "priority": "B",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "medium",
+      "prebuild_now": true,
+      "target": "inline resource record",
+      "dependencies": [
+        "mime.routing"
+      ],
+      "notes": "No network authority but requires strict size/type policy."
+    },
+    {
+      "id": "resource.image-decode",
+      "priority": "B",
+      "state": "native-bound",
+      "repair": "L3",
+      "risk": "medium",
+      "prebuild_now": true,
+      "target": "scene image primitive",
+      "dependencies": [],
+      "notes": "PNG/JPEG/WebP/AVIF support should be decoder capability packs, not ad hoc."
+    },
+    {
+      "id": "navigation.fragment",
+      "priority": "A",
+      "state": "candidate",
+      "repair": "L1",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "scroll/focus navigation operation",
+      "dependencies": [
+        "dom.id-index"
+      ],
+      "notes": "Same-document fragment navigation."
+    },
+    {
+      "id": "navigation.history",
+      "priority": "B",
+      "state": "state-bound",
+      "repair": "L2",
+      "risk": "low",
+      "prebuild_now": true,
+      "target": "history state machine",
+      "dependencies": [],
+      "notes": "Back/forward semantics without script History API first."
+    },
+    {
+      "id": "script.javascript",
+      "priority": "C",
+      "state": "authority-bound",
+      "repair": "L4",
+      "risk": "high",
+      "prebuild_now": false,
+      "target": "script execution authority",
+      "dependencies": [],
+      "notes": "Inventory/test only; never hot-enable from a page failure."
+    },
+    {
+      "id": "storage.cookies",
+      "priority": "C",
+      "state": "authority-bound",
+      "repair": "L4",
+      "risk": "high",
+      "prebuild_now": false,
+      "target": "persistent origin state",
+      "dependencies": [],
+      "notes": "Policy/partitioning/security model required before execution."
+    },
+    {
+      "id": "storage.local-indexed",
+      "priority": "C",
+      "state": "authority-bound",
+      "repair": "L4",
+      "risk": "high",
+      "prebuild_now": false,
+      "target": "persistent origin state",
+      "dependencies": [],
+      "notes": "Inventory only until explicit storage authority exists."
+    },
+    {
+      "id": "device-and-permission-apis",
+      "priority": "C",
+      "state": "authority-bound",
+      "repair": "L4",
+      "risk": "high",
+      "prebuild_now": false,
+      "target": "device capability boundary",
+      "dependencies": [],
+      "notes": "Never synthesized or activated on demand."
+    }
+  ]
+}
