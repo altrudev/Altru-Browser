@@ -757,6 +757,7 @@ pub fn compile_selector_state_capability(
     loop {
         let normalized = base.to_ascii_lowercase();
         let matched = [
+            (":focus-visible", AcirInteractionPredicate::FocusVisible),
             (":focus-within", AcirInteractionPredicate::FocusWithin),
             (":focus", AcirInteractionPredicate::Focus),
             (":hover", AcirInteractionPredicate::Hover),
@@ -1454,6 +1455,22 @@ mod tests {
 
         assert!(compile_font_size_capability("1rem").unwrap().is_none());
         assert!(compile_font_size_capability("16px").unwrap().is_none());
+    }
+
+    #[test]
+    fn focus_visible_compiles_as_distinct_interaction_state() {
+        let compiled = compile_selector_state_capability("button:focus-visible")
+            .unwrap()
+            .unwrap();
+        assert_eq!(compiled.base_selector, "button");
+        assert_eq!(
+            compiled.predicates,
+            vec![AcirInteractionPredicate::FocusVisible]
+        );
+        assert_eq!(
+            compiled.receipt.translation_id,
+            CSS_SELECTOR_INTERACTION_V1
+        );
     }
 
     #[test]
