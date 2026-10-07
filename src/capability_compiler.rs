@@ -7,11 +7,13 @@ use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirMediaType, AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
+    AcirLengthBasis, AcirMediaType, AcirRelativeLength, AcirSelectorChain, AcirSelectorRelation,
+    CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
 pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
+pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -37,6 +39,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_DESCENDANT_V1,
         source_family: "css-selector-descendant",
         target_semantics: "acir.selector-chain",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_FONT_EM_V1,
+        source_family: "css-font-relative-length",
+        target_semantics: "acir.relative-length.parent-font",
         status: TranslationStatus::Verified,
     },
 ];
@@ -76,10 +84,17 @@ pub struct CompiledSelectorCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledRelativeLengthCapability {
+    pub value: AcirRelativeLength,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityCompilerError {
     MalformedAtRule,
     UnsupportedMediaQuery(String),
     UnsupportedSelector(String),
+    UnsupportedValue(String),
     UnverifiedTranslation(String),
 }
 
@@ -125,6 +140,62 @@ fn parse_decimal_milli(raw: &str) -> Result<u32, CapabilityCompilerError> {
         .checked_mul(1_000)
         .and_then(|value| value.checked_add(fraction_milli))
         .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(raw.into()))
+}
+
+fn parse_decimal_milli_value(raw: &str) -> Result<u32, CapabilityCompilerError> {
+    let raw = raw.trim();
+    let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+    if whole.is_empty()
+        || !whole.chars().all(|ch| ch.is_ascii_digit())
+        || !fraction.chars().all(|ch| ch.is_ascii_digit())
+        || fraction.len() > 3
+    {
+        return Err(CapabilityCompilerError::UnsupportedValue(raw.into()));
+    }
+    let whole = whole
+        .parse::<u32>()
+        .map_err(|_| CapabilityCompilerError::UnsupportedValue(raw.into()))?;
+    let mut fraction_milli = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<u32>()
+            .map_err(|_| CapabilityCompilerError::UnsupportedValue(raw.into()))?
+    };
+    for _ in fraction.len()..3 {
+        fraction_milli = fraction_milli.saturating_mul(10);
+    }
+    whole
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_add(fraction_milli))
+        .ok_or_else(|| CapabilityCompilerError::UnsupportedValue(raw.into()))
+}
+
+pub fn compile_font_size_capability(
+    input: &str,
+) -> Result<Option<CompiledRelativeLengthCapability>, CapabilityCompilerError> {
+    let normalized = input.trim().to_ascii_lowercase();
+    if normalized.ends_with("rem") {
+        return Ok(None);
+    }
+    let Some(number) = normalized.strip_suffix("em") else {
+        return Ok(None);
+    };
+
+    require_verified(CSS_FONT_EM_V1)?;
+    let milli_factor = parse_decimal_milli_value(number)?;
+
+    Ok(Some(CompiledRelativeLengthCapability {
+        value: AcirRelativeLength {
+            milli_factor,
+            basis: AcirLengthBasis::ParentFontSize,
+        },
+        receipt: TranslationReceipt {
+            translation_id: CSS_FONT_EM_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
 }
 
 fn parse_resolution_milli_dpi(raw: &str) -> Result<u32, CapabilityCompilerError> {
@@ -523,6 +594,20 @@ mod tests {
     #[test]
     fn explicit_child_combinator_is_not_silently_lowered() {
         assert!(compile_selector_capability(":root > .card").is_err());
+    }
+
+    #[test]
+    fn font_em_compiles_to_parent_font_relative_acir() {
+        let one = compile_font_size_capability("1em").unwrap().unwrap();
+        assert_eq!(one.value.milli_factor, 1_000);
+        assert_eq!(one.value.basis, AcirLengthBasis::ParentFontSize);
+        assert_eq!(one.receipt.translation_id, CSS_FONT_EM_V1);
+
+        let fractional = compile_font_size_capability("1.25em").unwrap().unwrap();
+        assert_eq!(fractional.value.milli_factor, 1_250);
+
+        assert!(compile_font_size_capability("1rem").unwrap().is_none());
+        assert!(compile_font_size_capability("16px").unwrap().is_none());
     }
 
     #[test]
