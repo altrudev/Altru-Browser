@@ -346,17 +346,39 @@ fn split_selector_list(input: &str) -> Result<Vec<&str>, CssError> {
     Ok(parts)
 }
 
+fn has_forbidden_top_level_simple_syntax(input: &str) -> bool {
+    let mut bracket_depth = 0usize;
+    let mut quote: Option<char> = None;
+
+    for ch in input.chars() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' if bracket_depth > 0 => quote = Some(ch),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => {
+                if bracket_depth == 0 {
+                    return true;
+                }
+                bracket_depth -= 1;
+            }
+            '>' | '+' | '~' | '*' | ':' if bracket_depth == 0 => return true,
+            ch if ch.is_whitespace() && bracket_depth == 0 => return true,
+            _ => {}
+        }
+    }
+
+    quote.is_some() || bracket_depth != 0
+}
+
 fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
-    if input.is_empty()
-        || input.contains('>')
-        || input.contains('+')
-        || input.contains('~')
-        || input.contains(':')
-        || input
-            .chars()
-            .any(|ch| ch.is_whitespace() && !input.contains('['))
-    {
+    if input.is_empty() || has_forbidden_top_level_simple_syntax(input) {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
 
@@ -815,6 +837,16 @@ mod tests {
             .unwrap();
         let selector = parse_selector("p#hero.lead").unwrap();
         assert!(selector.matches(&document, node.id));
+    }
+
+    #[test]
+    fn top_level_simple_guard_distinguishes_attribute_operator_syntax() {
+        assert!(!has_forbidden_top_level_simple_syntax("[class~=external]"));
+        assert!(!has_forbidden_top_level_simple_syntax("[style*=border-top-color]"));
+        assert!(!has_forbidden_top_level_simple_syntax("[x:y=value]"));
+        assert!(has_forbidden_top_level_simple_syntax("main > p"));
+        assert!(has_forbidden_top_level_simple_syntax("a:visited"));
+        assert!(has_forbidden_top_level_simple_syntax("*"));
     }
 
     #[test]
