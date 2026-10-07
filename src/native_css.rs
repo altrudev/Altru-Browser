@@ -16,18 +16,45 @@ pub enum CssError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeOperator {
+    Equals,
+    Prefix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeSelector {
+    pub name: String,
+    pub operator: AttributeOperator,
+    pub value: String,
+    pub case_insensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selector {
     pub tag: Option<String>,
     pub id: Option<String>,
     pub classes: Vec<String>,
+    pub attributes: Vec<AttributeSelector>,
+    pub any_of: Vec<Selector>,
 }
 
 impl Selector {
     pub fn specificity(&self) -> (u16, u16, u16) {
-        (
+        let base = (
             u16::from(self.id.is_some()),
-            self.classes.len().min(u16::MAX as usize) as u16,
+            (self.classes.len() + self.attributes.len()).min(u16::MAX as usize) as u16,
             u16::from(self.tag.is_some()),
+        );
+        let nested = self
+            .any_of
+            .iter()
+            .map(Selector::specificity)
+            .max()
+            .unwrap_or((0, 0, 0));
+        (
+            base.0.saturating_add(nested.0),
+            base.1.saturating_add(nested.1),
+            base.2.saturating_add(nested.2),
         )
     }
 
@@ -66,6 +93,34 @@ impl Selector {
             }
         }
 
+        for attribute in &self.attributes {
+            let Some(actual) = document.attribute(node, &attribute.name) else {
+                return false;
+            };
+            let matched = if attribute.case_insensitive {
+                let actual = actual.to_ascii_lowercase();
+                let expected = attribute.value.to_ascii_lowercase();
+                match attribute.operator {
+                    AttributeOperator::Equals => actual == expected,
+                    AttributeOperator::Prefix => actual.starts_with(&expected),
+                }
+            } else {
+                match attribute.operator {
+                    AttributeOperator::Equals => actual == attribute.value,
+                    AttributeOperator::Prefix => actual.starts_with(&attribute.value),
+                }
+            };
+            if !matched {
+                return false;
+            }
+        }
+
+        if !self.any_of.is_empty()
+            && !self.any_of.iter().any(|selector| selector.matches(document, node))
+        {
+            return false;
+        }
+
         true
     }
 }
@@ -98,17 +153,110 @@ pub struct StyleSheet {
     pub rules: Vec<Rule>,
 }
 
-fn parse_selector(input: &str) -> Result<Selector, CssError> {
+fn parse_attribute_selector(input: &str) -> Result<AttributeSelector, CssError> {
+    let input = input.trim();
+    let (body, case_insensitive) = if let Some(body) = input.strip_suffix(" i") {
+        (body.trim_end(), true)
+    } else {
+        (input, false)
+    };
+
+    let (name, operator, raw_value) = if let Some((name, value)) = body.split_once("^=") {
+        (name, AttributeOperator::Prefix, value)
+    } else if let Some((name, value)) = body.split_once('=') {
+        (name, AttributeOperator::Equals, value)
+    } else {
+        return Err(CssError::UnsupportedSelector(format!("[{input}]")));
+    };
+
+    let name = name.trim().to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':'))
+    {
+        return Err(CssError::UnsupportedSelector(format!("[{input}]")));
+    }
+
+    let raw_value = raw_value.trim();
+    let value = if (raw_value.starts_with('"') && raw_value.ends_with('"'))
+        || (raw_value.starts_with('\'') && raw_value.ends_with('\''))
+    {
+        if raw_value.len() < 2 {
+            return Err(CssError::UnsupportedSelector(format!("[{input}]")));
+        }
+        raw_value[1..raw_value.len() - 1].to_string()
+    } else {
+        raw_value.to_string()
+    };
+    if value.is_empty() {
+        return Err(CssError::UnsupportedSelector(format!("[{input}]")));
+    }
+
+    Ok(AttributeSelector {
+        name,
+        operator,
+        value,
+        case_insensitive,
+    })
+}
+
+fn split_selector_list(input: &str) -> Result<Vec<&str>, CssError> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut quote: Option<char> = None;
+
+    for (index, ch) in input.char_indices() {
+        if let Some(current_quote) = quote {
+            if ch == current_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => {
+                if bracket_depth == 0 {
+                    return Err(CssError::UnsupportedSelector(input.into()));
+                }
+                bracket_depth -= 1;
+            }
+            ',' if bracket_depth == 0 => {
+                let part = input[start..index].trim();
+                if part.is_empty() {
+                    return Err(CssError::UnsupportedSelector(input.into()));
+                }
+                parts.push(part);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || bracket_depth != 0 {
+        return Err(CssError::UnsupportedSelector(input.into()));
+    }
+
+    let tail = input[start..].trim();
+    if tail.is_empty() {
+        return Err(CssError::UnsupportedSelector(input.into()));
+    }
+    parts.push(tail);
+    Ok(parts)
+}
+
+fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty()
-        || input.contains(',')
         || input.contains('>')
         || input.contains('+')
         || input.contains('~')
-        || input.chars().any(char::is_whitespace)
-        || input.contains('[')
-        || input.contains(':')
         || input.contains('*')
+        || input.contains(':')
+        || input.chars().any(|ch| ch.is_whitespace() && !input.contains('['))
     {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
@@ -117,15 +265,15 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         tag: None,
         id: None,
         classes: Vec::new(),
+        attributes: Vec::new(),
+        any_of: Vec::new(),
     };
-
     let mut cursor = 0usize;
-    let bytes = input.as_bytes();
 
-    if !matches!(bytes.first(), Some(b'.' | b'#')) {
-        let end = input.find(['.', '#']).unwrap_or(input.len());
-        let tag = &input[..end];
-        if tag.is_empty() {
+    if !matches!(input.as_bytes().first(), Some(b'.' | b'#' | b'[')) {
+        let end = input.find(['.', '#', '[']).unwrap_or(input.len());
+        let tag = input[..end].trim();
+        if tag.is_empty() || tag.chars().any(char::is_whitespace) {
             return Err(CssError::UnsupportedSelector(input.into()));
         }
         selector.tag = Some(tag.to_ascii_lowercase());
@@ -133,34 +281,74 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
     }
 
     while cursor < input.len() {
-        let marker = input.as_bytes()[cursor];
-        if marker != b'.' && marker != b'#' {
-            return Err(CssError::UnsupportedSelector(input.into()));
-        }
-        cursor += 1;
-        let rest = &input[cursor..];
-        let end_rel = rest.find(['.', '#']).unwrap_or(rest.len());
-        let value = &rest[..end_rel];
-        if value.is_empty() {
-            return Err(CssError::UnsupportedSelector(input.into()));
-        }
-
-        if marker == b'#' {
-            if selector.id.is_some() {
-                return Err(CssError::UnsupportedSelector(input.into()));
+        match input.as_bytes()[cursor] {
+            b'.' | b'#' => {
+                let marker = input.as_bytes()[cursor];
+                cursor += 1;
+                let rest = &input[cursor..];
+                let end_rel = rest.find(['.', '#', '[']).unwrap_or(rest.len());
+                let value = &rest[..end_rel];
+                if value.is_empty() || value.chars().any(char::is_whitespace) {
+                    return Err(CssError::UnsupportedSelector(input.into()));
+                }
+                if marker == b'#' {
+                    if selector.id.is_some() {
+                        return Err(CssError::UnsupportedSelector(input.into()));
+                    }
+                    selector.id = Some(value.into());
+                } else {
+                    selector.classes.push(value.into());
+                }
+                cursor += end_rel;
             }
-            selector.id = Some(value.into());
-        } else {
-            selector.classes.push(value.into());
+            b'[' => {
+                let rest = &input[cursor + 1..];
+                let Some(close_rel) = rest.find(']') else {
+                    return Err(CssError::UnsupportedSelector(input.into()));
+                };
+                let body = &rest[..close_rel];
+                selector.attributes.push(parse_attribute_selector(body)?);
+                cursor += close_rel + 2;
+            }
+            _ => return Err(CssError::UnsupportedSelector(input.into())),
         }
-        cursor += end_rel;
     }
 
-    if selector.tag.is_none() && selector.id.is_none() && selector.classes.is_empty() {
+    if selector.tag.is_none()
+        && selector.id.is_none()
+        && selector.classes.is_empty()
+        && selector.attributes.is_empty()
+    {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
 
     Ok(selector)
+}
+
+fn parse_selector(input: &str) -> Result<Selector, CssError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(CssError::UnsupportedSelector(input.into()));
+    }
+
+    if let Some(is_start) = input.find(":is(") {
+        if !input.ends_with(')') || input[is_start + 4..input.len() - 1].contains(":is(") {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        let mut selector = parse_simple_selector(&input[..is_start])?;
+        let inner = &input[is_start + 4..input.len() - 1];
+        selector.any_of = split_selector_list(inner)?
+            .into_iter()
+            .map(parse_simple_selector)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(selector);
+    }
+
+    if input.contains(',') {
+        return Err(CssError::UnsupportedSelector(input.into()));
+    }
+
+    parse_simple_selector(input)
 }
 
 fn parse_px(property: &str, value: &str) -> Result<f32, CssError> {
@@ -337,6 +525,32 @@ mod tests {
             .unwrap();
         let selector = parse_selector("p#hero.lead").unwrap();
         assert!(selector.matches(&document, node.id));
+    }
+
+    #[test]
+    fn parses_is_with_case_insensitive_attribute_selectors() {
+        let document = parse_document(
+            "<html><body><img sizes=\"AUTO, 100vw\"></body></html>",
+        )
+        .unwrap();
+        let image = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "img"))
+            .unwrap();
+        let selector =
+            parse_selector("img:is([sizes=auto i],[sizes^=\"auto,\" i])").unwrap();
+
+        assert!(selector.matches(&document, image.id));
+        assert_eq!(selector.specificity(), (0, 1, 1));
+    }
+
+    #[test]
+    fn unsupported_pseudo_class_still_fails_closed() {
+        assert!(matches!(
+            parse_selector("img:not(.x)"),
+            Err(CssError::UnsupportedSelector(_))
+        ));
     }
 
     #[test]
