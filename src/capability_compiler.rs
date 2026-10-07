@@ -224,9 +224,7 @@ fn split_top_level_and(query: &str) -> Result<Vec<&str>, CapabilityCompilerError
     Ok(parts)
 }
 
-fn lower_media_query(
-    raw: &str,
-) -> Result<AcirEnvironmentCondition, CapabilityCompilerError> {
+fn lower_media_query(raw: &str) -> Result<AcirEnvironmentCondition, CapabilityCompilerError> {
     require_verified(CSS_MEDIA_ENVIRONMENT_V1)?;
     let query = raw.trim();
     if query.is_empty() {
@@ -362,8 +360,7 @@ mod tests {
         for query in samples {
             let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
             let compiled =
-                compile_stylesheet_capabilities(&css, CapabilityEnvironment::desktop(800))
-                    .unwrap();
+                compile_stylesheet_capabilities(&css, CapabilityEnvironment::desktop(800)).unwrap();
             assert_eq!(compiled.receipts.len(), 1, "{query}");
         }
     }
