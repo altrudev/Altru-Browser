@@ -636,7 +636,12 @@ fn parse_declarations_with_translations(
         let parsed = if property.starts_with("--") {
             Some(CssValue::Raw(value.into()))
         } else if let Some(keyword) = global_keyword {
-            Some(CssValue::Global(keyword))
+            match property.as_str() {
+                "display" | "flex-direction" | "grid-template-columns" | "font-size"
+                | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
+                | "padding-bottom" | "padding-left" | "gap" => Some(CssValue::Global(keyword)),
+                _ => None,
+            }
         } else {
             match property.as_str() {
                 "display" => match value {
