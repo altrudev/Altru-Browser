@@ -16,6 +16,7 @@ pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
 pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
 pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1";
 pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
+pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_BOOLEAN_V1,
         source_family: "css-selector-boolean",
         target_semantics: "acir.selector-boolean",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_LIST_V1,
+        source_family: "css-selector-list",
+        target_semantics: "native.rule-expansion",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -116,6 +123,12 @@ pub struct CompiledSelectorBooleanCapability {
     pub base_selector: String,
     pub alternatives: Vec<String>,
     pub operation: AcirSelectorBoolean,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledSelectorListCapability {
+    pub selectors: Vec<String>,
     pub receipt: TranslationReceipt,
 }
 
@@ -600,6 +613,25 @@ fn split_selector_arguments(
     Ok(parts)
 }
 
+pub fn compile_selector_list_capability(
+    input: &str,
+) -> Result<Option<CompiledSelectorListCapability>, CapabilityCompilerError> {
+    let selectors = split_selector_arguments(input)?;
+    if selectors.len() < 2 {
+        return Ok(None);
+    }
+
+    require_verified(CSS_SELECTOR_LIST_V1)?;
+    Ok(Some(CompiledSelectorListCapability {
+        selectors,
+        receipt: TranslationReceipt {
+            translation_id: CSS_SELECTOR_LIST_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
 pub fn compile_selector_boolean_capability(
     input: &str,
 ) -> Result<Option<CompiledSelectorBooleanCapability>, CapabilityCompilerError> {
@@ -811,6 +843,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hi_dpi.receipts[0].decision, TranslationDecision::Elided);
+    }
+
+    #[test]
+    fn top_level_selector_list_compiles_without_splitting_nested_commas() {
+        let compiled = compile_selector_list_capability(
+            ".a,.b[data-x=\"x,y\"],:is(.c,.d)",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            compiled.selectors,
+            vec![".a", ".b[data-x=\"x,y\"]", ":is(.c,.d)"]
+        );
+        assert_eq!(compiled.receipt.translation_id, CSS_SELECTOR_LIST_V1);
     }
 
     #[test]
