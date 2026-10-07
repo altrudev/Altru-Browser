@@ -455,9 +455,30 @@ pub fn parse_declarations(input: &str) -> Result<Vec<Declaration>, CssError> {
     Ok(declarations)
 }
 
-pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
-    let mut rules = Vec::new();
+fn strip_css_comments(input: &str) -> Result<String, CssError> {
+    let mut output = String::with_capacity(input.len());
     let mut rest = input;
+
+    loop {
+        let Some(start) = rest.find("/*") else {
+            output.push_str(rest);
+            break;
+        };
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("*/") else {
+            return Err(CssError::MalformedRule);
+        };
+        rest = &after_start[end + 2..];
+    }
+
+    Ok(output)
+}
+
+pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
+    let cleaned = strip_css_comments(input)?;
+    let mut rules = Vec::new();
+    let mut rest = cleaned.as_str();
     let mut order = 0usize;
 
     while !rest.trim().is_empty() {
@@ -558,6 +579,24 @@ mod tests {
         assert!(matches!(
             parse_stylesheet("main p { font-size: 20px; }"),
             Err(CssError::UnsupportedSelector(_))
+        ));
+    }
+
+    #[test]
+    fn strips_css_comments_before_selector_parsing() {
+        let sheet = parse_stylesheet(
+            "/*# sourceURL=inline-css */ p.lead { font-size: 20px; }",
+        )
+        .unwrap();
+        assert_eq!(sheet.rules.len(), 1);
+        assert_eq!(sheet.rules[0].selector.tag.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn unterminated_css_comment_fails_closed() {
+        assert!(matches!(
+            parse_stylesheet("/* broken p { font-size: 20px; }"),
+            Err(CssError::MalformedRule)
         ));
     }
 
