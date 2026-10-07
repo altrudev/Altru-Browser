@@ -37,6 +37,8 @@ dependencies = [
  "eframe",
  "hex",
  "image",
+ "serde",
+ "serde_json",
  "servo",
  "sha2",
  "taffy",
