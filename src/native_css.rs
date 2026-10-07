@@ -811,14 +811,51 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_child_and_sibling_combinators_fail_closed() {
-        for selector in ["main > p", "main + p", "main ~ p"] {
-            let css = format!("{selector} {{ font-size: 20px; }}");
-            assert!(matches!(
-                parse_stylesheet(&css),
-                Err(CssError::UnsupportedSelector(_))
-            ));
-        }
+    fn child_and_sibling_relations_execute_through_acir() {
+        let document = parse_document(
+            "<html><body><main><h2>H</h2><p class=\"lead\">A</p><span>X</span><p class=\"later\">B</p></main></body></html>",
+        )
+        .unwrap();
+        let lead = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("lead"))
+            .unwrap();
+        let later = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("later"))
+            .unwrap();
+
+        let child = parse_selector("main > .lead").unwrap();
+        assert!(child.matches(&document, lead.id));
+
+        let adjacent = parse_selector("h2 + .lead").unwrap();
+        assert!(adjacent.matches(&document, lead.id));
+
+        let general = parse_selector("h2 ~ .later").unwrap();
+        assert!(general.matches(&document, later.id));
+        assert_eq!(general.specificity(), (0, 1, 1));
+
+        let compiled = parse_stylesheet_with_environment(
+            "main > .lead { font-size: 20px; } h2 + .lead { margin-top: 4px; } h2 ~ .later { margin-bottom: 4px; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(compiled
+            .translations
+            .iter()
+            .filter(|receipt| receipt.translation_id == "css.selector-relations.v1")
+            .count()
+            >= 3);
+    }
+
+    #[test]
+    fn malformed_selector_relation_still_fails_closed() {
+        assert!(matches!(
+            parse_selector("main > > p"),
+            Err(CssError::UnsupportedSelector(_))
+        ));
     }
 
     #[test]
