@@ -390,9 +390,10 @@ pub fn compile_selector_capability(
 
     require_verified(CSS_SELECTOR_DESCENDANT_V1)?;
 
+    let relation_count = parts.len() - 1;
     let chain = AcirSelectorChain {
         compounds: parts.into_iter().map(str::to_string).collect(),
-        combinators: vec![AcirSelectorRelation::Descendant; parts.len() - 1],
+        combinators: vec![AcirSelectorRelation::Descendant; relation_count],
     };
     if !chain.is_well_formed() {
         return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
