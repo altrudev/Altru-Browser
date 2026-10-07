@@ -52,7 +52,38 @@ impl<B: ResourceBroker> NativeRuntime<B> {
             .navigate(target.clone())
             .map_err(NativeRuntimeError::Navigation)?
             .clone();
+        self.fetch_navigation(navigation.id, target)
+    }
 
+    pub fn reload(&mut self) -> Result<Option<NativePage>, NativeRuntimeError> {
+        let Some(navigation) = self.kernel.current().cloned() else {
+            return Ok(None);
+        };
+        self.fetch_navigation(navigation.id, navigation.target)
+            .map(Some)
+    }
+
+    pub fn back(&mut self) -> Result<Option<NativePage>, NativeRuntimeError> {
+        let Some(navigation) = self.kernel.back().cloned() else {
+            return Ok(None);
+        };
+        self.fetch_navigation(navigation.id, navigation.target)
+            .map(Some)
+    }
+
+    pub fn forward(&mut self) -> Result<Option<NativePage>, NativeRuntimeError> {
+        let Some(navigation) = self.kernel.forward().cloned() else {
+            return Ok(None);
+        };
+        self.fetch_navigation(navigation.id, navigation.target)
+            .map(Some)
+    }
+
+    fn fetch_navigation(
+        &mut self,
+        navigation_id: u64,
+        target: String,
+    ) -> Result<NativePage, NativeRuntimeError> {
         self.next_request_id = self.next_request_id.saturating_add(1);
         let request = ResourceRequest {
             request_id: self.next_request_id,
@@ -77,7 +108,7 @@ impl<B: ResourceBroker> NativeRuntime<B> {
             .map_err(NativeRuntimeError::Engine)?;
 
         Ok(NativePage {
-            navigation_id: navigation.id,
+            navigation_id,
             target,
             execution,
         })
@@ -109,6 +140,27 @@ mod tests {
         assert_eq!(page.navigation_id, 1);
         assert!(page.execution.artifact.contains("Runtime fixture"));
         assert_eq!(runtime.kernel().history().len(), 1);
+    }
+
+    #[test]
+    fn back_forward_and_reload_reuse_existing_history_entries() {
+        let mut runtime = NativeRuntime::new(FixtureBroker);
+        let first = runtime.load("awef://one").unwrap();
+        let second = runtime.load("awef://two").unwrap();
+        assert_eq!(runtime.kernel().history().len(), 2);
+
+        let back = runtime.back().unwrap().unwrap();
+        assert_eq!(back.navigation_id, first.navigation_id);
+        assert_eq!(back.target, "awef://one");
+        assert_eq!(runtime.kernel().history().len(), 2);
+
+        let forward = runtime.forward().unwrap().unwrap();
+        assert_eq!(forward.navigation_id, second.navigation_id);
+        assert_eq!(forward.target, "awef://two");
+
+        let reloaded = runtime.reload().unwrap().unwrap();
+        assert_eq!(reloaded.navigation_id, second.navigation_id);
+        assert_eq!(runtime.kernel().history().len(), 2);
     }
 
     #[test]
