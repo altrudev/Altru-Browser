@@ -397,10 +397,7 @@ fn split_selector_list(input: &str) -> Result<Vec<&str>, CssError> {
 fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty()
-        || input.contains('>')
-        || input.contains('+')
-        || input.contains('~')
-        || input.contains('*')
+        || input.trim_start().starts_with('*')
         || input.contains(':')
         || input
             .chars()
@@ -914,7 +911,7 @@ mod tests {
     #[test]
     fn attribute_operator_case_flag_applies_to_all_operator_forms() {
         let document =
-            parse_document("<html><body><div data-x=\"Alpha Beta-Gamma\"></div></body></html>")
+            parse_document("<html><body><div data-x=\"Alpha Beta-Gamma\" lang=\"EN-us\"></div></body></html>")
                 .unwrap();
         let node = document
             .nodes()
@@ -924,7 +921,7 @@ mod tests {
 
         for selector in [
             "[data-x~=alpha i]",
-            "[data-x|=alpha i]",
+            "[lang|=en i]",
             "[data-x^=alpha i]",
             "[data-x$=gamma i]",
             "[data-x*=beta i]",
