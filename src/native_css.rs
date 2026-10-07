@@ -395,7 +395,15 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
 
-    if let Some(compiled) = compile_selector_capability(input)? {
+    let compiled_selector = match compile_selector_capability(input) {
+        Ok(compiled) => compiled,
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    if let Some(compiled) = compiled_selector {
         let mut current: Option<Selector> = None;
         for (index, compound) in compiled.chain.compounds.iter().enumerate() {
             let mut selector = parse_selector(compound)?;
@@ -585,8 +593,13 @@ fn parse_compiled_stylesheet(
         let close = open + 1 + close_rel;
 
         let selector_source = rest[..open].trim();
-        if let Some(compiled_selector) = compile_selector_capability(selector_source)? {
-            translations.push(compiled_selector.receipt);
+        match compile_selector_capability(selector_source) {
+            Ok(Some(compiled_selector)) => translations.push(compiled_selector.receipt),
+            Ok(None) => {}
+            Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+                return Err(CssError::UnsupportedSelector(selector_source.into()));
+            }
+            Err(error) => return Err(error.into()),
         }
         let selector = parse_selector(selector_source)?;
         let declarations = parse_declarations(&rest[open + 1..close])?;
