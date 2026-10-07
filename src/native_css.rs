@@ -5,9 +5,13 @@
 
 use crate::capability_compiler::{
     CapabilityCompilerError, TranslationReceipt, compile_font_size_capability,
-    compile_selector_capability, compile_stylesheet_capabilities,
+    compile_selector_capability, compile_selector_state_capability,
+    compile_stylesheet_capabilities,
 };
-use crate::capability_ir::{AcirRelativeLength, AcirSelectorRelation, CapabilityEnvironment};
+use crate::capability_ir::{
+    AcirInteractionPredicate, AcirRelativeLength, AcirSelectorRelation, CapabilityEnvironment,
+};
+use crate::interaction_state::InteractionSnapshot;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +52,7 @@ pub struct Selector {
     pub classes: Vec<String>,
     pub attributes: Vec<AttributeSelector>,
     pub root: bool,
+    pub states: Vec<AcirInteractionPredicate>,
     pub any_of: Vec<Selector>,
     pub ancestor: Option<(AcirSelectorRelation, Box<Selector>)>,
 }
@@ -56,7 +61,10 @@ impl Selector {
     pub fn specificity(&self) -> (u16, u16, u16) {
         let base = (
             u16::from(self.id.is_some()),
-            (self.classes.len() + self.attributes.len() + usize::from(self.root))
+            (self.classes.len()
+                + self.attributes.len()
+                + self.states.len()
+                + usize::from(self.root))
                 .min(u16::MAX as usize) as u16,
             u16::from(self.tag.is_some()),
         );
@@ -85,6 +93,15 @@ impl Selector {
     }
 
     pub fn matches(&self, document: &NativeDocument, node: NodeId) -> bool {
+        self.matches_with_interaction(document, node, &InteractionSnapshot::default())
+    }
+
+    pub fn matches_with_interaction(
+        &self,
+        document: &NativeDocument,
+        node: NodeId,
+        interaction: &InteractionSnapshot,
+    ) -> bool {
         let Some(candidate) = document.node(node) else {
             return false;
         };
@@ -149,7 +166,15 @@ impl Selector {
             && !self
                 .any_of
                 .iter()
-                .any(|selector| selector.matches(document, node))
+                .any(|selector| selector.matches_with_interaction(document, node, interaction))
+        {
+            return false;
+        }
+
+        if self
+            .states
+            .iter()
+            .any(|predicate| !interaction.matches(document, node, *predicate))
         {
             return false;
         }
@@ -159,17 +184,17 @@ impl Selector {
                 AcirSelectorRelation::Descendant => document
                     .ancestor_elements(node)
                     .into_iter()
-                    .any(|ancestor_id| related.matches(document, ancestor_id)),
+                    .any(|ancestor_id| related.matches_with_interaction(document, ancestor_id, interaction)),
                 AcirSelectorRelation::Child => document
                     .element_parent(node)
-                    .is_some_and(|parent_id| related.matches(document, parent_id)),
+                    .is_some_and(|parent_id| related.matches_with_interaction(document, parent_id, interaction)),
                 AcirSelectorRelation::AdjacentSibling => document
                     .previous_element_sibling(node)
-                    .is_some_and(|sibling_id| related.matches(document, sibling_id)),
+                    .is_some_and(|sibling_id| related.matches_with_interaction(document, sibling_id, interaction)),
                 AcirSelectorRelation::GeneralSibling => document
                     .previous_element_siblings(node)
                     .into_iter()
-                    .any(|sibling_id| related.matches(document, sibling_id)),
+                    .any(|sibling_id| related.matches_with_interaction(document, sibling_id, interaction)),
             };
             if !matched {
                 return false;
@@ -331,6 +356,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         classes: Vec::new(),
         attributes: Vec::new(),
         root: false,
+        states: Vec::new(),
         any_of: Vec::new(),
         ancestor: None,
     };
@@ -422,6 +448,19 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         return current.ok_or_else(|| CssError::UnsupportedSelector(input.into()));
     }
 
+    let compiled_state = match compile_selector_state_capability(input) {
+        Ok(compiled) => compiled,
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(compiled) = compiled_state {
+        let mut selector = parse_selector(&compiled.base_selector)?;
+        selector.states.extend(compiled.predicates);
+        return Ok(selector);
+    }
+
     if input == ":root" {
         return Ok(Selector {
             tag: None,
@@ -429,6 +468,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             classes: Vec::new(),
             attributes: Vec::new(),
             root: true,
+            states: Vec::new(),
             any_of: Vec::new(),
             ancestor: None,
         });
@@ -622,8 +662,19 @@ fn parse_compiled_stylesheet(
 
         let selector_source = rest[..open].trim();
         match compile_selector_capability(selector_source) {
-            Ok(Some(compiled_selector)) => translations.push(compiled_selector.receipt),
-            Ok(None) => {}
+            Ok(Some(compiled_selector)) => {
+                for compound in &compiled_selector.chain.compounds {
+                    if let Some(state) = compile_selector_state_capability(compound)? {
+                        translations.push(state.receipt);
+                    }
+                }
+                translations.push(compiled_selector.receipt);
+            }
+            Ok(None) => {
+                if let Some(state) = compile_selector_state_capability(selector_source)? {
+                    translations.push(state.receipt);
+                }
+            }
             Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
                 return Err(CssError::UnsupportedSelector(selector_source.into()));
             }
@@ -856,6 +907,62 @@ mod tests {
             parse_selector("main > > p"),
             Err(CssError::UnsupportedSelector(_))
         ));
+    }
+
+    #[test]
+    fn interaction_state_selector_is_explicit_and_snapshot_bound() {
+        let document = parse_document(
+            "<html><body><a class=\"screen-reader-text\">Skip</a></body></html>",
+        )
+        .unwrap();
+        let target = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("screen-reader-text"))
+            .unwrap();
+
+        let compiled = parse_stylesheet_with_environment(
+            ".screen-reader-text:focus { font-size: 20px; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        let selector = &compiled.stylesheet.rules[0].selector;
+
+        assert!(!selector.matches(&document, target.id));
+        let focused = InteractionSnapshot {
+            focused_node: Some(target.id),
+            ..InteractionSnapshot::default()
+        };
+        assert!(selector.matches_with_interaction(&document, target.id, &focused));
+        assert_eq!(selector.specificity(), (0, 2, 0));
+        assert!(compiled
+            .translations
+            .iter()
+            .any(|receipt| receipt.translation_id == "css.selector-interaction-state.v1"));
+    }
+
+    #[test]
+    fn focus_within_uses_real_descendant_state() {
+        let document = parse_document(
+            "<html><body><div class=\"group\"><button class=\"button\">X</button></div></body></html>",
+        )
+        .unwrap();
+        let group = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("group"))
+            .unwrap();
+        let button = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("button"))
+            .unwrap();
+        let selector = parse_selector(".group:focus-within").unwrap();
+        let snapshot = InteractionSnapshot {
+            focused_node: Some(button.id),
+            ..InteractionSnapshot::default()
+        };
+        assert!(selector.matches_with_interaction(&document, group.id, &snapshot));
     }
 
     #[test]
