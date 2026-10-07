@@ -1397,8 +1397,14 @@ mod tests {
     }
 
     #[test]
-    fn state_only_selector_is_not_silently_generalized() {
-        assert!(compile_selector_state_capability(":focus").is_err());
+    fn bare_known_interaction_state_is_bounded_and_unknown_state_fails_closed() {
+        let compiled = compile_selector_state_capability(":focus")
+            .unwrap()
+            .unwrap();
+        assert!(compiled.base_selector.is_empty());
+        assert_eq!(compiled.predicates, vec![AcirInteractionPredicate::Focus]);
+
+        assert!(compile_selector_state_capability(":visited").unwrap().is_none());
     }
 
     #[test]
