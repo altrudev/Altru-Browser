@@ -32,6 +32,9 @@ pub enum AcirMediaType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirSelectorRelation {
     Descendant,
+    Child,
+    AdjacentSibling,
+    GeneralSibling,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,8 +178,11 @@ mod tests {
     #[test]
     fn selector_chain_requires_one_relation_between_compounds() {
         let chain = AcirSelectorChain {
-            compounds: vec![":root".into(), ".card".into()],
-            combinators: vec![AcirSelectorRelation::Descendant],
+            compounds: vec!["main".into(), "section".into(), ".card".into()],
+            combinators: vec![
+                AcirSelectorRelation::Child,
+                AcirSelectorRelation::AdjacentSibling,
+            ],
         };
         assert!(chain.is_well_formed());
     }
