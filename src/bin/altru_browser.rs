@@ -672,6 +672,15 @@ mod tests {
     }
 
     #[test]
+    fn built_in_start_page_executes_on_native_engine() {
+        let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
+        let page = runtime.load(START_URL).unwrap();
+        assert!(!page.execution.scene.is_empty());
+        assert!(page.execution.native_semantics);
+        assert!(!page.execution.production_promoted);
+    }
+
+    #[test]
     fn url_input_defaults_to_https() {
         assert_eq!(normalize_target("example.com"), "https://example.com");
         assert_eq!(normalize_target("start"), START_URL);
