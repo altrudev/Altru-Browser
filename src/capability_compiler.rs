@@ -874,6 +874,17 @@ mod tests {
     }
 
     #[test]
+    fn attribute_only_selector_is_not_mistaken_for_relation_or_boolean_syntax() {
+        assert!(compile_selector_capability("[sizes^=\"auto,\" i]").unwrap().is_none());
+        assert!(compile_selector_boolean_capability("[sizes^=\"auto,\" i]")
+            .unwrap()
+            .is_none());
+        assert!(compile_selector_state_capability("[sizes^=\"auto,\" i]")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn interaction_state_pseudos_compile_to_acir_predicates() {
         let compiled = compile_selector_state_capability(".screen-reader-text:focus")
             .unwrap()
