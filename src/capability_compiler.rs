@@ -201,9 +201,9 @@ fn parse_decimal_milli(raw: &str) -> Result<u32, CapabilityCompilerError> {
 fn parse_decimal_milli_value(raw: &str) -> Result<u32, CapabilityCompilerError> {
     let raw = raw.trim();
     let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
-    if (!whole.is_empty() && !whole.chars().all(|ch| ch.is_ascii_digit()))
-        || fraction.is_empty()
-        || !fraction.chars().all(|ch| ch.is_ascii_digit())
+    if (whole.is_empty() && fraction.is_empty())
+        || (!whole.is_empty() && !whole.chars().all(|ch| ch.is_ascii_digit()))
+        || (!fraction.is_empty() && !fraction.chars().all(|ch| ch.is_ascii_digit()))
         || fraction.len() > 3
     {
         return Err(CapabilityCompilerError::UnsupportedValue(raw.into()));
