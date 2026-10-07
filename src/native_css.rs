@@ -838,6 +838,15 @@ mod tests {
     }
 
     #[test]
+    fn attribute_prefix_selector_preserves_quoted_comma_with_case_flag() {
+        let selector = parse_attribute_selector("sizes^=\"auto,\" i").unwrap();
+        assert_eq!(selector.name, "sizes");
+        assert_eq!(selector.operator, AttributeOperator::Prefix);
+        assert_eq!(selector.value, "auto,");
+        assert!(selector.case_insensitive);
+    }
+
+    #[test]
     fn parses_is_with_case_insensitive_attribute_selectors() {
         let document =
             parse_document("<html><body><img sizes=\"AUTO, 100vw\"></body></html>").unwrap();
