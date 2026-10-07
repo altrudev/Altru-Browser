@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 use crate::engine_api::{
     EngineAdapter, EngineCapability, EngineManifest, PlatformClaim, PlatformStatus, PromotionState,
 };
-use crate::native_css::{CssError, stylesheet_from_document};
+use crate::acir::EnvironmentSnapshot;
+use crate::native_css::{CssError, stylesheet_from_document_with_environment};
 use crate::native_dom::NativeDocument;
 use crate::native_html::{HtmlParseError, parse_document};
 use crate::native_layout::{layout_document_with_styles, scene_from_layout};
@@ -125,8 +126,9 @@ fn sha256(bytes: &[u8]) -> String {
 
 pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEngineError> {
     let document = parse_document(input)?;
-    let stylesheet = stylesheet_from_document(&document)?;
-    let layout = layout_document_with_styles(&document, &stylesheet, 800.0)?;
+    let environment = EnvironmentSnapshot::desktop_preview();
+    let stylesheet = stylesheet_from_document_with_environment(&document, environment)?;
+    let layout = layout_document_with_styles(&document, &stylesheet, environment.viewport_width_px as f32)?;
     let scene = scene_from_layout(&layout);
     let artifact = DeterministicTextRenderer.render(&scene, 800, 600);
 
