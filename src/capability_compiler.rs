@@ -8,14 +8,15 @@ use sha2::{Digest, Sha256};
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
     AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirRelativeLength,
-    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirSupportCondition,
-    CapabilityEnvironment,
+    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirStructuralPredicate,
+    AcirSupportCondition, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
 pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
 pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
 pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1";
+pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural-child.v1";
 pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
 pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
@@ -59,6 +60,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_INTERACTION_V1,
         source_family: "css-selector-interaction-state",
         target_semantics: "acir.interaction-predicate",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_STRUCTURAL_V1,
+        source_family: "css-selector-structural-child",
+        target_semantics: "acir.structural-predicate",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -137,6 +144,13 @@ pub struct CompiledSelectorCapability {
 pub struct CompiledSelectorStateCapability {
     pub base_selector: String,
     pub predicates: Vec<AcirInteractionPredicate>,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledSelectorStructuralCapability {
+    pub base_selector: String,
+    pub predicates: Vec<AcirStructuralPredicate>,
     pub receipt: TranslationReceipt,
 }
 
@@ -763,6 +777,48 @@ pub fn compile_selector_boolean_capability(
         operation,
         receipt: TranslationReceipt {
             translation_id: CSS_SELECTOR_BOOLEAN_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+pub fn compile_selector_structural_capability(
+    input: &str,
+) -> Result<Option<CompiledSelectorStructuralCapability>, CapabilityCompilerError> {
+    let mut base = input.trim().to_string();
+    let mut predicates = Vec::new();
+
+    loop {
+        let normalized = base.to_ascii_lowercase();
+        let matched = [
+            (":first-child", AcirStructuralPredicate::FirstChild),
+            (":last-child", AcirStructuralPredicate::LastChild),
+            (":only-child", AcirStructuralPredicate::OnlyChild),
+        ]
+        .into_iter()
+        .find(|(suffix, _)| normalized.ends_with(suffix));
+
+        let Some((suffix, predicate)) = matched else {
+            break;
+        };
+        let new_len = base.len().saturating_sub(suffix.len());
+        base.truncate(new_len);
+        base = base.trim_end().to_string();
+        predicates.push(predicate);
+    }
+
+    if predicates.is_empty() {
+        return Ok(None);
+    }
+
+    require_verified(CSS_SELECTOR_STRUCTURAL_V1)?;
+    predicates.reverse();
+    Ok(Some(CompiledSelectorStructuralCapability {
+        base_selector: base,
+        predicates,
+        receipt: TranslationReceipt {
+            translation_id: CSS_SELECTOR_STRUCTURAL_V1.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
@@ -1490,6 +1546,22 @@ mod tests {
 
         assert!(compile_font_size_capability("1rem").unwrap().is_none());
         assert!(compile_font_size_capability("16px").unwrap().is_none());
+    }
+
+    #[test]
+    fn structural_child_pseudos_compile_as_bounded_dom_predicates() {
+        let last = compile_selector_structural_capability(".item:last-child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(last.base_selector, ".item");
+        assert_eq!(last.predicates, vec![AcirStructuralPredicate::LastChild]);
+
+        let bare = compile_selector_structural_capability(":only-child")
+            .unwrap()
+            .unwrap();
+        assert!(bare.base_selector.is_empty());
+        assert_eq!(bare.predicates, vec![AcirStructuralPredicate::OnlyChild]);
+        assert_eq!(bare.receipt.translation_id, CSS_SELECTOR_STRUCTURAL_V1);
     }
 
     #[test]
