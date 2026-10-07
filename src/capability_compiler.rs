@@ -650,19 +650,44 @@ pub fn compile_selector_boolean_capability(
         return Ok(None);
     };
 
-    if !input.ends_with(')') {
-        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    let open = start + marker.len() - 1;
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut close = None;
+    for (offset, ch) in input[open..].char_indices() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                }
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
     }
-
-    let inner_start = start + marker.len();
-    let inner = &input[inner_start..input.len() - 1];
+    let close = close.ok_or_else(|| CapabilityCompilerError::UnsupportedSelector(input.into()))?;
+    let inner = &input[open + 1..close];
     if inner.is_empty() {
         return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
     }
 
     require_verified(CSS_SELECTOR_BOOLEAN_V1)?;
     let alternatives = split_selector_arguments(inner)?;
-    let base_selector = input[..start].trim().to_string();
+    let mut base_selector = String::new();
+    base_selector.push_str(input[..start].trim());
+    base_selector.push_str(input[close + 1..].trim());
 
     Ok(Some(CompiledSelectorBooleanCapability {
         base_selector,
@@ -857,6 +882,18 @@ mod tests {
             vec![".a", ".b[data-x=\"x,y\"]", ":is(.c,.d)"]
         );
         assert_eq!(compiled.receipt.translation_id, CSS_SELECTOR_LIST_V1);
+    }
+
+    #[test]
+    fn boolean_selector_can_be_embedded_inside_compound() {
+        let compiled = compile_selector_boolean_capability(
+            "h1:where(.wp-block-heading).has-background",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(compiled.base_selector, "h1.has-background");
+        assert_eq!(compiled.alternatives, vec![".wp-block-heading"]);
+        assert_eq!(compiled.operation, AcirSelectorBoolean::AnyZeroSpecificity);
     }
 
     #[test]
