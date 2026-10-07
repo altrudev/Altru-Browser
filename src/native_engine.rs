@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(execution.translations.len(), 1);
         assert_eq!(
             execution.translations[0].translation_id,
-            crate::capability_compiler::CSS_MEDIA_RESOLUTION_V1
+            crate::capability_compiler::CSS_MEDIA_ENVIRONMENT_V1
         );
         assert_eq!(
             execution.translations[0].decision,
