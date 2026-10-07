@@ -60,6 +60,75 @@ fn estimate_subtree_height(
     }
 }
 
+fn visible_children(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    node: NodeId,
+) -> Vec<NodeId> {
+    document
+        .node(node)
+        .map(|candidate| {
+            candidate
+                .children
+                .iter()
+                .copied()
+                .filter(|child| {
+                    styles
+                        .get(*child)
+                        .map(|resolved| resolved.computed.display != Display::None)
+                        .unwrap_or(true)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn table_row_cells(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    row: NodeId,
+) -> Vec<NodeId> {
+    let children = visible_children(document, styles, row);
+    if children.is_empty() {
+        vec![row]
+    } else {
+        children
+    }
+}
+
+fn table_rows(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    table: NodeId,
+) -> Vec<Vec<NodeId>> {
+    let mut rows = Vec::new();
+    for child in visible_children(document, styles, table) {
+        let display = styles
+            .get(child)
+            .map(|resolved| resolved.computed.display)
+            .unwrap_or(Display::Inline);
+        match display {
+            Display::TableRow => rows.push(table_row_cells(document, styles, child)),
+            Display::TableRowGroup | Display::TableHeaderGroup | Display::TableFooterGroup => {
+                for row in visible_children(document, styles, child) {
+                    let row_display = styles
+                        .get(row)
+                        .map(|resolved| resolved.computed.display)
+                        .unwrap_or(Display::Inline);
+                    if row_display == Display::TableRow {
+                        rows.push(table_row_cells(document, styles, row));
+                    } else {
+                        rows.push(vec![row]);
+                    }
+                }
+            }
+            Display::TableCaption => rows.push(vec![child]),
+            _ => rows.push(vec![child]),
+        }
+    }
+    rows
+}
+
 fn layout_node(
     document: &NativeDocument,
     styles: &[ResolvedStyle],
@@ -99,6 +168,38 @@ fn layout_node(
                 text: Some(text.clone()),
             });
             *y += line_height;
+        }
+        NodeKind::Element { .. }
+            if matches!(style.display, Display::Table | Display::InlineTable) =>
+        {
+            *y += style.margin_before_px + style.padding_top_px;
+            let child_x = x + style.padding_left_px;
+            let child_width = (width - style.padding_left_px - style.padding_right_px).max(1.0);
+
+            for cells in table_rows(document, styles, node) {
+                if cells.is_empty() {
+                    continue;
+                }
+                let origin_y = *y;
+                let cell_width = child_width / cells.len() as f32;
+                let mut row_bottom = origin_y;
+                for (index, cell) in cells.iter().enumerate() {
+                    let mut local_y = origin_y;
+                    layout_node(
+                        document,
+                        styles,
+                        *cell,
+                        child_x + cell_width * index as f32,
+                        cell_width.max(1.0),
+                        &mut local_y,
+                        fragments,
+                    )?;
+                    row_bottom = row_bottom.max(local_y);
+                }
+                *y = row_bottom.max(origin_y + 1.0);
+            }
+
+            *y += style.padding_bottom_px + style.margin_after_px;
         }
         NodeKind::Element { .. }
             if style.display.is_flex_context() || style.display.is_grid_context() =>
@@ -295,6 +396,22 @@ mod tests {
         let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
         assert_eq!(layout.fragments.len(), 1);
         assert_eq!(layout.fragments[0].text.as_deref(), Some("Visible"));
+    }
+
+    #[test]
+    fn owned_table_context_arranges_rows_and_cells() {
+        let document = parse_document(
+            "<html><body><div class=\"table\"><div class=\"row\"><span class=\"cell\">A</span><span class=\"cell\">B</span></div><div class=\"row\"><span class=\"cell\">C</span></div></div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".table { display: table; } .row { display: table-row; } .cell { display: table-cell; }",
+        )
+        .unwrap();
+        let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
+        assert_eq!(layout.fragments.len(), 3);
+        assert!(layout.fragments[1].x > layout.fragments[0].x);
+        assert!(layout.fragments[2].y > layout.fragments[0].y);
     }
 
     #[cfg(feature = "taffy-layout")]
