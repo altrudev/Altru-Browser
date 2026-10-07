@@ -114,6 +114,25 @@ impl CapabilityEnvironment {
 }
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirLengthBasis {
+    ParentFontSize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcirRelativeLength {
+    /// Relative factor represented in thousandths of the source unit.
+    /// For example, 1em = 1000 and 1.25em = 1250.
+    pub milli_factor: u32,
+    pub basis: AcirLengthBasis,
+}
+
+impl AcirRelativeLength {
+    pub fn resolve_px(self, parent_font_size_px: f32) -> f32 {
+        parent_font_size_px * (self.milli_factor as f32 / 1_000.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcirSelectorChain {
     pub compounds: Vec<String>,
@@ -160,6 +179,15 @@ mod tests {
             combinators: vec![AcirSelectorRelation::Descendant],
         };
         assert!(chain.is_well_formed());
+    }
+
+    #[test]
+    fn relative_font_length_resolves_against_parent_font_size() {
+        let value = AcirRelativeLength {
+            milli_factor: 1_250,
+            basis: AcirLengthBasis::ParentFontSize,
+        };
+        assert_eq!(value.resolve_px(16.0), 20.0);
     }
 
     #[test]
