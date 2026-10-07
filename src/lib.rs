@@ -1,6 +1,7 @@
 pub mod browser_kernel;
 pub mod classifier;
 pub mod companion_observation;
+pub mod companion_translation;
 pub mod engine;
 pub mod engine_api;
 pub mod governor;
