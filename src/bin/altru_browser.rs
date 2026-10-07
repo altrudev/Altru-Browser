@@ -13,6 +13,7 @@ use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, Stroke, Vec2}
 
 const START_URL: &str = "altru://start";
 const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_REDIRECT_HOPS: usize = 5;
 
 const START_DOCUMENT: &str = r#"
 <html>
@@ -58,6 +59,41 @@ impl Default for HttpsDocumentBroker {
     }
 }
 
+fn validate_https_url(target: &str) -> Result<url::Url, ResourceError> {
+    let url = url::Url::parse(target)
+        .map_err(|error| ResourceError::Transport(format!("invalid URL: {error}")))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err(ResourceError::Denied);
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ResourceError::Denied);
+    }
+    Ok(url)
+}
+
+fn redirect_within_host_family(from: &url::Url, to: &url::Url) -> bool {
+    let Some(from_host) = from.host_str() else {
+        return false;
+    };
+    let Some(to_host) = to.host_str() else {
+        return false;
+    };
+
+    let host_family_match = from_host == to_host
+        || to_host
+            .strip_suffix(from_host)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+        || from_host
+            .strip_suffix(to_host)
+            .is_some_and(|prefix| prefix.ends_with('.'));
+
+    host_family_match && from.port_or_known_default() == to.port_or_known_default()
+}
+
+fn is_redirect_status(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
 impl ResourceBroker for HttpsDocumentBroker {
     fn fetch(&mut self, request: &ResourceRequest) -> Result<ResourceResponse, ResourceError> {
         if request.target == START_URL {
@@ -69,18 +105,42 @@ impl ResourceBroker for HttpsDocumentBroker {
             });
         }
 
-        let url = url::Url::parse(&request.target)
-            .map_err(|error| ResourceError::Transport(format!("invalid URL: {error}")))?;
-        if url.scheme() != "https" || url.host_str().is_none() {
-            return Err(ResourceError::Denied);
-        }
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err(ResourceError::Denied);
-        }
+        let mut current_url = validate_https_url(&request.target)?;
+        let mut visited = std::collections::BTreeSet::new();
+        visited.insert(current_url.as_str().to_string());
 
-        let response = match self.agent.get(url.as_str()).call() {
-            Ok(response) => response,
-            Err(ureq::Error::Status(status, response)) => {
+        let response = loop {
+            let response = match self.agent.get(current_url.as_str()).call() {
+                Ok(response) => response,
+                Err(ureq::Error::Status(_, response)) => response,
+                Err(error) => return Err(ResourceError::Transport(error.to_string())),
+            };
+
+            let status = response.status();
+            if is_redirect_status(status) {
+                if visited.len() > MAX_REDIRECT_HOPS {
+                    return Err(ResourceError::Transport(
+                        "redirect hop limit exceeded".into(),
+                    ));
+                }
+                let location = response.header("Location").ok_or_else(|| {
+                    ResourceError::Transport("redirect response is missing Location".into())
+                })?;
+                let next = current_url.join(location).map_err(|error| {
+                    ResourceError::Transport(format!("invalid redirect target: {error}"))
+                })?;
+                let next = validate_https_url(next.as_str())?;
+                if !redirect_within_host_family(&current_url, &next) {
+                    return Err(ResourceError::Denied);
+                }
+                if !visited.insert(next.as_str().to_string()) {
+                    return Err(ResourceError::Transport("redirect loop detected".into()));
+                }
+                current_url = next;
+                continue;
+            }
+
+            if !(200..300).contains(&status) {
                 return Ok(ResourceResponse {
                     request_id: request.request_id,
                     status,
@@ -91,9 +151,7 @@ impl ResourceBroker for HttpsDocumentBroker {
                     body: Vec::new(),
                 });
             }
-            Err(error) => {
-                return Err(ResourceError::Transport(error.to_string()));
-            }
+            break response;
         };
 
         let status = response.status();
@@ -691,6 +749,37 @@ mod tests {
                 Err(ResourceError::Denied)
             );
         }
+    }
+
+    #[test]
+    fn redirect_policy_allows_same_https_host_family_only() {
+        let apex = validate_https_url("https://cnet.com").unwrap();
+        let www = validate_https_url("https://www.cnet.com/").unwrap();
+        let unrelated = validate_https_url("https://example.com/").unwrap();
+        let alternate_port = validate_https_url("https://www.cnet.com:444/").unwrap();
+
+        assert!(redirect_within_host_family(&apex, &www));
+        assert!(redirect_within_host_family(&www, &apex));
+        assert!(!redirect_within_host_family(&apex, &unrelated));
+        assert!(!redirect_within_host_family(&apex, &alternate_port));
+        assert!(is_redirect_status(301));
+        assert!(is_redirect_status(308));
+        assert!(!is_redirect_status(304));
+    }
+
+    #[test]
+    #[ignore = "live network smoke; run explicitly during release verification"]
+    fn live_broker_follows_cnet_same_family_redirect() {
+        let mut broker = HttpsDocumentBroker::default();
+        let response = broker
+            .fetch(&ResourceRequest {
+                request_id: 99,
+                target: "https://cnet.com".into(),
+                kind: ResourceKind::Document,
+            })
+            .unwrap();
+        assert!((200..300).contains(&response.status));
+        assert!(!response.body.is_empty());
     }
 
     #[test]
