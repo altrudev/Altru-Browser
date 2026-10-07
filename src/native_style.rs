@@ -14,8 +14,32 @@ pub enum Display {
     None,
     Block,
     Inline,
+    InlineBlock,
     Flex,
+    InlineFlex,
     Grid,
+    InlineGrid,
+}
+
+impl Display {
+    pub const fn is_flex_context(self) -> bool {
+        matches!(self, Self::Flex | Self::InlineFlex)
+    }
+
+    pub const fn is_grid_context(self) -> bool {
+        matches!(self, Self::Grid | Self::InlineGrid)
+    }
+
+    pub const fn is_block_container(self) -> bool {
+        matches!(self, Self::Block | Self::InlineBlock)
+    }
+
+    pub const fn is_outer_inline(self) -> bool {
+        matches!(
+            self,
+            Self::Inline | Self::InlineBlock | Self::InlineFlex | Self::InlineGrid
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,8 +201,11 @@ fn apply_value(style: &mut ComputedStyle, property: &str, value: &CssValue) {
                 "none" => Display::None,
                 "block" => Display::Block,
                 "inline" => Display::Inline,
+                "inline-block" => Display::InlineBlock,
                 "flex" => Display::Flex,
+                "inline-flex" => Display::InlineFlex,
                 "grid" => Display::Grid,
+                "inline-grid" => Display::InlineGrid,
                 _ => style.display,
             };
         }
@@ -341,6 +368,35 @@ mod tests {
             tag: "script".into(),
         });
         assert_eq!(style.display, Display::None);
+    }
+
+    #[test]
+    fn composite_display_keywords_preserve_outer_inline_semantics() {
+        let document = parse_document(
+            "<html><body><div class=\"ib\">A</div><div class=\"if\">B</div><div class=\"ig\">C</div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".ib { display: inline-block; } .if { display: inline-flex; } .ig { display: inline-grid; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+
+        let mut matched = document
+            .nodes()
+            .iter()
+            .filter_map(|node| {
+                document
+                    .attribute(node.id, "class")
+                    .map(|class| (class.to_string(), styles[node.id].computed.display))
+            })
+            .collect::<Vec<_>>();
+        matched.sort_by(|a, b| a.0.cmp(&b.0));
+
+        assert_eq!(matched[0].1, Display::InlineBlock);
+        assert_eq!(matched[1].1, Display::InlineFlex);
+        assert_eq!(matched[2].1, Display::InlineGrid);
+        assert!(matched.iter().all(|(_, display)| display.is_outer_inline()));
     }
 
     #[test]

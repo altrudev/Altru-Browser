@@ -100,7 +100,9 @@ fn layout_node(
             });
             *y += line_height;
         }
-        NodeKind::Element { .. } if matches!(style.display, Display::Flex | Display::Grid) => {
+        NodeKind::Element { .. }
+            if style.display.is_flex_context() || style.display.is_grid_context() =>
+        {
             *y += style.margin_before_px + style.padding_top_px;
             let child_x = x + style.padding_left_px;
             let child_width = (width - style.padding_left_px - style.padding_right_px).max(1.0);
@@ -116,15 +118,17 @@ fn layout_node(
                 })
                 .collect::<Vec<_>>();
 
-            let mode = match style.display {
-                Display::Flex => match style.flex_direction {
+            let mode = if style.display.is_flex_context() {
+                match style.flex_direction {
                     FlexDirection::Row => GeometryMode::FlexRow,
                     FlexDirection::Column => GeometryMode::FlexColumn,
-                },
-                Display::Grid => GeometryMode::Grid {
+                }
+            } else if style.display.is_grid_context() {
+                GeometryMode::Grid {
                     columns: style.grid_columns,
-                },
-                _ => unreachable!(),
+                }
+            } else {
+                unreachable!()
             };
             let request = GeometryRequest {
                 mode,
@@ -160,7 +164,7 @@ fn layout_node(
             *y += style.padding_bottom_px + style.margin_after_px;
         }
         NodeKind::Element { .. } => {
-            let block = style.display == Display::Block;
+            let block = style.display.is_block_container();
             if block {
                 *y += style.margin_before_px + style.padding_top_px;
             }
@@ -266,6 +270,19 @@ mod tests {
         let fragment = &layout.fragments[0];
         assert_eq!(fragment.x, 28.0);
         assert_eq!(fragment.width, 268.0);
+    }
+
+    #[test]
+    fn inline_block_uses_block_container_internals() {
+        let document =
+            parse_document("<html><body><span class=\"box\">Hello</span></body></html>").unwrap();
+        let sheet = parse_stylesheet(
+            ".box { display: inline-block; padding-top: 5px; padding-bottom: 7px; }",
+        )
+        .unwrap();
+        let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
+        assert_eq!(layout.fragments.len(), 1);
+        assert!(layout.content_height > layout.fragments[0].height + 16.0);
     }
 
     #[test]
