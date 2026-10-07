@@ -1,10 +1,8 @@
-<h1 align="center">Altru Browser</h1>
+# Altru Browser
 
 <p align="center">
-  <img src="assets/brand/altru-browser-mark.png" alt="Altru Browser" width="180">
+  <img src="assets/brand/altru-browser-logo-github.png" alt="Altru Browser — Code for Humanity" width="520">
 </p>
-
-<p align="center"><strong>Code for Humanity.</strong></p>
 
 ![Altru Browser final product-direction concept art](assets/concept/altru-browser-final-concept.png)
 
