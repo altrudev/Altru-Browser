@@ -6,7 +6,7 @@
 use crate::capability_compiler::{
     CapabilityCompilerError, TranslationReceipt, compile_stylesheet_capabilities,
 };
-use crate::capability_ir::CapabilityEnvironment;
+use crate::capability_ir::{AcirSelectorRelation, CapabilityEnvironment};
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,7 @@ pub struct Selector {
     pub attributes: Vec<AttributeSelector>,
     pub root: bool,
     pub any_of: Vec<Selector>,
+    pub ancestor: Option<(AcirSelectorRelation, Box<Selector>)>,
 }
 
 impl Selector {
@@ -64,10 +65,21 @@ impl Selector {
             .map(Selector::specificity)
             .max()
             .unwrap_or((0, 0, 0));
+        let ancestor = self
+            .ancestor
+            .as_ref()
+            .map(|(_, selector)| selector.specificity())
+            .unwrap_or((0, 0, 0));
         (
-            base.0.saturating_add(nested.0),
-            base.1.saturating_add(nested.1),
-            base.2.saturating_add(nested.2),
+            base.0
+                .saturating_add(nested.0)
+                .saturating_add(ancestor.0),
+            base.1
+                .saturating_add(nested.1)
+                .saturating_add(ancestor.1),
+            base.2
+                .saturating_add(nested.2)
+                .saturating_add(ancestor.2),
         )
     }
 
@@ -139,6 +151,26 @@ impl Selector {
                 .any(|selector| selector.matches(document, node))
         {
             return false;
+        }
+
+        if let Some((relation, ancestor)) = &self.ancestor {
+            let matched = match relation {
+                AcirSelectorRelation::Descendant => {
+                    let mut current = candidate.parent;
+                    let mut found = false;
+                    while let Some(parent_id) = current {
+                        if ancestor.matches(document, parent_id) {
+                            found = true;
+                            break;
+                        }
+                        current = document.node(parent_id).and_then(|parent| parent.parent);
+                    }
+                    found
+                }
+            };
+            if !matched {
+                return false;
+            }
         }
 
         true
@@ -296,6 +328,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         attributes: Vec::new(),
         root: false,
         any_of: Vec::new(),
+        ancestor: None,
     };
     let mut cursor = 0usize;
 
@@ -355,10 +388,67 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     Ok(selector)
 }
 
+fn split_descendant_selector(input: &str) -> Result<Option<(&str, &str)>, CssError> {
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut last_split: Option<(usize, usize)> = None;
+    let mut whitespace_start: Option<usize> = None;
+
+    for (index, ch) in input.char_indices() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => {
+                if bracket_depth == 0 {
+                    return Err(CssError::UnsupportedSelector(input.into()));
+                }
+                bracket_depth -= 1;
+            }
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' => {
+                if paren_depth == 0 {
+                    return Err(CssError::UnsupportedSelector(input.into()));
+                }
+                paren_depth -= 1;
+            }
+            _ => {}
+        }
+
+        if bracket_depth == 0 && paren_depth == 0 && ch.is_whitespace() {
+            whitespace_start.get_or_insert(index);
+        } else if let Some(start) = whitespace_start.take() {
+            if !input[..start].trim().is_empty() && !input[index..].trim().is_empty() {
+                last_split = Some((start, index));
+            }
+        }
+    }
+
+    if quote.is_some() || bracket_depth != 0 || paren_depth != 0 {
+        return Err(CssError::UnsupportedSelector(input.into()));
+    }
+
+    Ok(last_split.map(|(start, end)| (&input[..start], &input[end..])))
+}
+
 fn parse_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty() {
         return Err(CssError::UnsupportedSelector(input.into()));
+    }
+
+    if let Some((ancestor_input, descendant_input)) = split_descendant_selector(input)? {
+        let ancestor = parse_selector(ancestor_input)?;
+        let mut descendant = parse_selector(descendant_input)?;
+        descendant.ancestor = Some((AcirSelectorRelation::Descendant, Box::new(ancestor)));
+        return Ok(descendant);
     }
 
     if input == ":root" {
@@ -369,6 +459,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             attributes: Vec::new(),
             root: true,
             any_of: Vec::new(),
+            ancestor: None,
         });
     }
 
@@ -653,6 +744,43 @@ mod tests {
         assert!(selector.matches(&document, html.id));
         assert!(!selector.matches(&document, div.id));
         assert_eq!(selector.specificity(), (0, 1, 0));
+    }
+
+    #[test]
+    fn descendant_relation_matches_observed_root_class_selector() {
+        let document = parse_document(
+            "<html><body><section><div class=\"has-very-light-gray-background-color\">X</div></section></body></html>",
+        )
+        .unwrap();
+        let target = document
+            .nodes()
+            .iter()
+            .find(|node| {
+                matches!(&node.kind, NodeKind::Element { tag } if tag == "div")
+                    && document.attribute(node.id, "class")
+                        == Some("has-very-light-gray-background-color")
+            })
+            .unwrap();
+        let selector =
+            parse_selector(":root .has-very-light-gray-background-color").unwrap();
+
+        assert!(selector.matches(&document, target.id));
+        assert_eq!(selector.specificity(), (0, 2, 0));
+    }
+
+    #[test]
+    fn descendant_relation_requires_matching_ancestor() {
+        let document = parse_document(
+            "<html><body><section><p class=\"lead\">X</p></section></body></html>",
+        )
+        .unwrap();
+        let target = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
+            .unwrap();
+        let selector = parse_selector("article .lead").unwrap();
+        assert!(!selector.matches(&document, target.id));
     }
 
     #[test]
