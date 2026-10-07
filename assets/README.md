@@ -1,39 +1,33 @@
 # Visual Assets
 
-This directory contains the official Altru Browser visual system.
+This directory contains Altru Browser visual assets at different stages of development.
 
-## Source-of-truth vectors
+## Canonical boundary
 
-- `brand/altru-browser-mark.svg` — primary application/project mark.
-- `brand/favicon.svg` — small-format mark.
-- `brand/altru-browser-wordmark.svg` — horizontal identity.
-- `brand/social-preview.svg` — 1280×640 repository/social artwork source.
-- `brand/featured-product.svg` — 1600×900 Altru.dev featured-product artwork source.
-- `mockups/desktop-shell.svg` — desktop browser-shell direction.
-- `mockups/mobile-shell.svg` — mobile browser-shell direction.
+The approved canonical logo is the Ukrainian vyshyvanka **flower** mark. The exact approved file—not a redraw or an older geometric-knot concept—is required before a brand asset can be treated as official.
 
-## Raster derivatives
+Earlier geometric marks, wordmarks, social cards, featured-product graphics, icons, and other exploratory assets may remain for migration/reference purposes, but they are **not canonical by location alone**.
 
-Application/web icon set: `icon-32.png`, `icon-64.png`, `icon-128.png`, `icon-180.png`, `icon-192.png`, `icon-256.png`, and `icon-512.png`.
+## Mockups
 
-- `brand/altru-browser-mark.png` — 512×512.
-- `brand/social-preview.png` — 1280×640.
-- `brand/featured-product.png` — 1600×900.
-- `mockups/desktop-shell.png` — 1600×1000.
-- `mockups/mobile-shell.png` — 820×1600.
+Unapproved desktop/mobile shell mockups have been removed from the repository.
 
-SVG files remain the editable source of truth. Raster files exist for GitHub, Altru.dev, social platforms, app listings, and other consumers that require PNG.
+A product mockup may be added back only when it matches the approved interaction baseline:
+
+- Focus: page-first, chrome receded;
+- Navigate: thin top navigation/address bar;
+- Inspect: temporary/on-demand Page Intelligence;
+- no permanent left sidebar;
+- no permanent right intelligence panel;
+- no permanent bottom toolbar;
+- exact approved flower mark.
 
 ## Design language
 
-The visual system is inspired by Ukrainian vyshyvanka geometry without turning the interface into literal folk decoration. Sky blue and wheat gold carry the main identity; embroidery red is deliberately restrained. Geometric diamonds and woven rails are used as structural identity elements.
+Ukrainian identity is explicit in the canonical flower mark and subtle in the interface. Vyshyvanka-inspired geometry should be structural and restrained rather than decorative or dashboard-like.
 
 See `../docs/BRAND.md`.
 
 ## Rights
 
 Official marks and branded artwork are governed by `BRAND-LICENSE.md` and `../TRADEMARKS.md`, not by the source-code MIT/Apache-2.0 grant.
-
-## Altru.dev production use
-
-The official mark is used by the Altru.dev featured-product card. The governed production deployment and exact predecessor/after hashes are recorded in `../evidence/altru-dev-featured-integration-2026-10-06.md`.
