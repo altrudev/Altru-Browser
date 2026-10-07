@@ -6,7 +6,8 @@
 use crate::capability_compiler::{
     CapabilityCompilerError, TranslationReceipt, compile_font_size_capability,
     compile_selector_boolean_capability, compile_selector_capability,
-    compile_selector_state_capability, compile_stylesheet_capabilities,
+    compile_selector_list_capability, compile_selector_state_capability,
+    compile_stylesheet_capabilities,
 };
 use crate::capability_ir::{
     AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean, AcirSelectorRelation,
@@ -748,6 +749,38 @@ fn strip_css_comments(input: &str) -> Result<String, CssError> {
     Ok(output)
 }
 
+fn collect_selector_translation_receipts(
+    selector_source: &str,
+    translations: &mut Vec<TranslationReceipt>,
+) -> Result<(), CssError> {
+    match compile_selector_capability(selector_source) {
+        Ok(Some(compiled_selector)) => {
+            for compound in &compiled_selector.chain.compounds {
+                if let Some(boolean) = compile_selector_boolean_capability(compound)? {
+                    translations.push(boolean.receipt);
+                }
+                if let Some(state) = compile_selector_state_capability(compound)? {
+                    translations.push(state.receipt);
+                }
+            }
+            translations.push(compiled_selector.receipt);
+        }
+        Ok(None) => {
+            if let Some(boolean) = compile_selector_boolean_capability(selector_source)? {
+                translations.push(boolean.receipt);
+            }
+            if let Some(state) = compile_selector_state_capability(selector_source)? {
+                translations.push(state.receipt);
+            }
+        }
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(selector_source.into()));
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn parse_compiled_stylesheet(
     input: &str,
 ) -> Result<(StyleSheet, Vec<TranslationReceipt>), CssError> {
@@ -766,46 +799,36 @@ fn parse_compiled_stylesheet(
         let close = open + 1 + close_rel;
 
         let selector_source = rest[..open].trim();
-        match compile_selector_capability(selector_source) {
-            Ok(Some(compiled_selector)) => {
-                for compound in &compiled_selector.chain.compounds {
-                    if let Some(boolean) = compile_selector_boolean_capability(compound)? {
-                        translations.push(boolean.receipt);
-                    }
-                    if let Some(state) = compile_selector_state_capability(compound)? {
-                        translations.push(state.receipt);
-                    }
-                }
-                translations.push(compiled_selector.receipt);
-            }
-            Ok(None) => {
-                if let Some(boolean) = compile_selector_boolean_capability(selector_source)? {
-                    translations.push(boolean.receipt);
-                }
-                if let Some(state) = compile_selector_state_capability(selector_source)? {
-                    translations.push(state.receipt);
-                }
-            }
-            Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
-                return Err(CssError::UnsupportedSelector(selector_source.into()));
-            }
-            Err(error) => return Err(error.into()),
-        }
-        let selector = parse_selector(selector_source)?;
+        let selectors = if let Some(compiled_list) =
+            compile_selector_list_capability(selector_source)?
+        {
+            translations.push(compiled_list.receipt);
+            compiled_list.selectors
+        } else {
+            vec![selector_source.to_string()]
+        };
+
         let (declarations, declaration_translations) =
             parse_declarations_with_translations(&rest[open + 1..close])?;
         translations.extend(declaration_translations);
-        rules.push(Rule {
-            selector,
-            declarations,
-            order,
-        });
+
+        for selector_source in selectors {
+            collect_selector_translation_receipts(&selector_source, &mut translations)?;
+            let selector = parse_selector(&selector_source)?;
+            rules.push(Rule {
+                selector,
+                declarations: declarations.clone(),
+                order,
+            });
+        }
+
         order += 1;
         rest = &rest[close + 1..];
     }
 
     Ok((StyleSheet { rules }, translations))
 }
+
 pub fn parse_stylesheet_with_environment(
     input: &str,
     environment: CapabilityEnvironment,
@@ -1234,6 +1257,23 @@ mod tests {
         let declarations = parse_declarations("future-property: 1; font-size: 18px;").unwrap();
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, "font-size");
+    }
+
+    #[test]
+    fn selector_list_expands_to_rules_with_shared_source_order() {
+        let compiled = parse_stylesheet_with_environment(
+            ".a,.b[data-x=\"x,y\"] { font-size: 20px; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+
+        assert_eq!(compiled.stylesheet.rules.len(), 2);
+        assert_eq!(compiled.stylesheet.rules[0].order, 0);
+        assert_eq!(compiled.stylesheet.rules[1].order, 0);
+        assert!(compiled
+            .translations
+            .iter()
+            .any(|receipt| receipt.translation_id == "css.selector-list.v1"));
     }
 
     #[test]
