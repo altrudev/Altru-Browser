@@ -5,11 +5,12 @@
 
 use crate::capability_compiler::{
     CapabilityCompilerError, TranslationReceipt, compile_font_size_capability,
-    compile_selector_capability, compile_selector_state_capability,
-    compile_stylesheet_capabilities,
+    compile_selector_boolean_capability, compile_selector_capability,
+    compile_selector_state_capability, compile_stylesheet_capabilities,
 };
 use crate::capability_ir::{
-    AcirInteractionPredicate, AcirRelativeLength, AcirSelectorRelation, CapabilityEnvironment,
+    AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean, AcirSelectorRelation,
+    CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
@@ -54,6 +55,8 @@ pub struct Selector {
     pub root: bool,
     pub states: Vec<AcirInteractionPredicate>,
     pub any_of: Vec<Selector>,
+    pub where_any_of: Vec<Selector>,
+    pub none_of: Vec<Selector>,
     pub ancestor: Option<(AcirSelectorRelation, Box<Selector>)>,
 }
 
@@ -68,12 +71,23 @@ impl Selector {
                 .min(u16::MAX as usize) as u16,
             u16::from(self.tag.is_some()),
         );
-        let nested = self
+        let any_nested = self
             .any_of
             .iter()
             .map(Selector::specificity)
             .max()
             .unwrap_or((0, 0, 0));
+        let none_nested = self
+            .none_of
+            .iter()
+            .map(Selector::specificity)
+            .max()
+            .unwrap_or((0, 0, 0));
+        let nested = (
+            any_nested.0.saturating_add(none_nested.0),
+            any_nested.1.saturating_add(none_nested.1),
+            any_nested.2.saturating_add(none_nested.2),
+        );
         let ancestor = self
             .ancestor
             .as_ref()
@@ -167,6 +181,23 @@ impl Selector {
                 .any_of
                 .iter()
                 .any(|selector| selector.matches_with_interaction(document, node, interaction))
+        {
+            return false;
+        }
+
+        if !self.where_any_of.is_empty()
+            && !self
+                .where_any_of
+                .iter()
+                .any(|selector| selector.matches_with_interaction(document, node, interaction))
+        {
+            return false;
+        }
+
+        if self
+            .none_of
+            .iter()
+            .any(|selector| selector.matches_with_interaction(document, node, interaction))
         {
             return false;
         }
@@ -358,6 +389,8 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         root: false,
         states: Vec::new(),
         any_of: Vec::new(),
+        where_any_of: Vec::new(),
+        none_of: Vec::new(),
         ancestor: None,
     };
     let mut cursor = 0usize;
@@ -448,6 +481,43 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         return current.ok_or_else(|| CssError::UnsupportedSelector(input.into()));
     }
 
+    let compiled_boolean = match compile_selector_boolean_capability(input) {
+        Ok(compiled) => compiled,
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(compiled) = compiled_boolean {
+        let mut selector = if compiled.base_selector.is_empty() {
+            Selector {
+                tag: None,
+                id: None,
+                classes: Vec::new(),
+                attributes: Vec::new(),
+                root: false,
+                states: Vec::new(),
+                any_of: Vec::new(),
+                where_any_of: Vec::new(),
+                none_of: Vec::new(),
+                ancestor: None,
+            }
+        } else {
+            parse_selector(&compiled.base_selector)?
+        };
+        let alternatives = compiled
+            .alternatives
+            .iter()
+            .map(|alternative| parse_selector(alternative))
+            .collect::<Result<Vec<_>, _>>()?;
+        match compiled.operation {
+            AcirSelectorBoolean::Any => selector.any_of = alternatives,
+            AcirSelectorBoolean::AnyZeroSpecificity => selector.where_any_of = alternatives,
+            AcirSelectorBoolean::None => selector.none_of = alternatives,
+        }
+        return Ok(selector);
+    }
+
     let compiled_state = match compile_selector_state_capability(input) {
         Ok(compiled) => compiled,
         Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
@@ -470,24 +540,13 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             root: true,
             states: Vec::new(),
             any_of: Vec::new(),
+            where_any_of: Vec::new(),
+            none_of: Vec::new(),
             ancestor: None,
         });
     }
 
-    if let Some(is_start) = input.find(":is(") {
-        if !input.ends_with(')') || input[is_start + 4..input.len() - 1].contains(":is(") {
-            return Err(CssError::UnsupportedSelector(input.into()));
-        }
-        let mut selector = parse_simple_selector(&input[..is_start])?;
-        let inner = &input[is_start + 4..input.len() - 1];
-        selector.any_of = split_selector_list(inner)?
-            .into_iter()
-            .map(parse_simple_selector)
-            .collect::<Result<Vec<_>, _>>()?;
-        return Ok(selector);
-    }
-
-    if input.contains(',') {
+    if split_selector_list(input)?.len() > 1 {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
 
@@ -664,6 +723,9 @@ fn parse_compiled_stylesheet(
         match compile_selector_capability(selector_source) {
             Ok(Some(compiled_selector)) => {
                 for compound in &compiled_selector.chain.compounds {
+                    if let Some(boolean) = compile_selector_boolean_capability(compound)? {
+                        translations.push(boolean.receipt);
+                    }
                     if let Some(state) = compile_selector_state_capability(compound)? {
                         translations.push(state.receipt);
                     }
@@ -671,6 +733,9 @@ fn parse_compiled_stylesheet(
                 translations.push(compiled_selector.receipt);
             }
             Ok(None) => {
+                if let Some(boolean) = compile_selector_boolean_capability(selector_source)? {
+                    translations.push(boolean.receipt);
+                }
                 if let Some(state) = compile_selector_state_capability(selector_source)? {
                     translations.push(state.receipt);
                 }
@@ -773,6 +838,28 @@ mod tests {
     }
 
     #[test]
+    fn attribute_prefix_selector_preserves_quoted_comma_with_case_flag() {
+        let selector = parse_attribute_selector("sizes^=\"auto,\" i").unwrap();
+        assert_eq!(selector.name, "sizes");
+        assert_eq!(selector.operator, AttributeOperator::Prefix);
+        assert_eq!(selector.value, "auto,");
+        assert!(selector.case_insensitive);
+    }
+
+    #[test]
+    fn attribute_only_selector_survives_simple_selector_parser() {
+        let selector = parse_simple_selector("[sizes^=\"auto,\" i]").unwrap();
+        assert_eq!(selector.attributes.len(), 1);
+    }
+
+    #[test]
+    fn attribute_only_selector_survives_full_selector_pipeline() {
+        let selector = parse_selector("[sizes^=\"auto,\" i]").unwrap();
+        assert_eq!(selector.attributes.len(), 1);
+        assert_eq!(selector.attributes[0].value, "auto,");
+    }
+
+    #[test]
     fn parses_is_with_case_insensitive_attribute_selectors() {
         let document =
             parse_document("<html><body><img sizes=\"AUTO, 100vw\"></body></html>").unwrap();
@@ -856,7 +943,7 @@ mod tests {
     #[test]
     fn unsupported_pseudo_class_still_fails_closed() {
         assert!(matches!(
-            parse_selector("img:not(.x)"),
+            parse_selector("a:visited"),
             Err(CssError::UnsupportedSelector(_))
         ));
     }
@@ -907,6 +994,49 @@ mod tests {
             parse_selector("main > > p"),
             Err(CssError::UnsupportedSelector(_))
         ));
+    }
+
+    #[test]
+    fn boolean_selector_family_matches_and_preserves_specificity_rules() {
+        let document = parse_document(
+            "<html><body><p class=\"lead has-border-color\">A</p><p class=\"summary\">B</p></body></html>",
+        )
+        .unwrap();
+        let lead = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("lead has-border-color"))
+            .unwrap();
+        let summary = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("summary"))
+            .unwrap();
+
+        let where_selector = parse_selector(":where(.has-border-color)").unwrap();
+        assert!(where_selector.matches(&document, lead.id));
+        assert!(!where_selector.matches(&document, summary.id));
+        assert_eq!(where_selector.specificity(), (0, 0, 0));
+
+        let is_selector = parse_selector("p:is(.lead,.summary)").unwrap();
+        assert!(is_selector.matches(&document, lead.id));
+        assert!(is_selector.matches(&document, summary.id));
+        assert_eq!(is_selector.specificity(), (0, 1, 1));
+
+        let not_selector = parse_selector("p:not(.summary)").unwrap();
+        assert!(not_selector.matches(&document, lead.id));
+        assert!(!not_selector.matches(&document, summary.id));
+        assert_eq!(not_selector.specificity(), (0, 1, 1));
+
+        let compiled = parse_stylesheet_with_environment(
+            ":where(.has-border-color) { font-size: 20px; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(compiled
+            .translations
+            .iter()
+            .any(|receipt| receipt.translation_id == "css.selector-boolean.v1"));
     }
 
     #[test]
