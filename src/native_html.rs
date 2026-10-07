@@ -27,6 +27,8 @@ const VOID_ELEMENTS: &[&str] = &[
     "track", "wbr",
 ];
 
+const RAW_TEXT_ELEMENTS: &[&str] = &["script", "style"];
+
 fn decode_entity(entity: &str) -> Option<char> {
     match entity {
         "amp" => Some('&'),
@@ -169,6 +171,40 @@ fn parse_tag(raw: &str) -> Result<ParsedTag, HtmlParseError> {
     })
 }
 
+fn find_raw_text_end(input: &str, tag: &str) -> Option<(usize, usize)> {
+    let lower = input.to_ascii_lowercase();
+    let needle = format!("</{tag}");
+    let mut search_from = 0usize;
+
+    while search_from < lower.len() {
+        let relative = lower[search_from..].find(&needle)?;
+        let start = search_from + relative;
+        let after_name = start + needle.len();
+        let tail = &lower[after_name..];
+        let close_relative = tail.find('>')?;
+        if tail[..close_relative].trim().is_empty() {
+            return Some((start, after_name + close_relative + 1));
+        }
+        search_from = after_name;
+    }
+
+    None
+}
+
+fn append_raw_text_if_present(
+    document: &mut NativeDocument,
+    parent: usize,
+    raw: &str,
+) -> Result<(), HtmlParseError> {
+    if raw.is_empty() {
+        return Ok(());
+    }
+    document
+        .append_text(parent, raw.to_string())
+        .ok_or(HtmlParseError::MalformedMarkup)?;
+    Ok(())
+}
+
 pub fn parse_document(input: &str) -> Result<NativeDocument, HtmlParseError> {
     let mut document = NativeDocument::new();
     let mut stack = vec![document.root()];
@@ -229,14 +265,31 @@ pub fn parse_document(input: &str) -> Result<NativeDocument, HtmlParseError> {
             stack.pop();
         } else {
             let parent = *stack.last().unwrap();
-            let is_void = VOID_ELEMENTS.contains(&parsed.name.as_str());
+            let tag_name = parsed.name.clone();
+            let is_void = VOID_ELEMENTS.contains(&tag_name.as_str());
+            let is_raw_text = RAW_TEXT_ELEMENTS.contains(&tag_name.as_str());
             let id = document
                 .append_element_with_attributes(parent, parsed.name, parsed.attributes)
                 .ok_or(HtmlParseError::MalformedMarkup)?;
 
-            if !(parsed.self_closing || is_void) {
-                stack.push(id);
+            if parsed.self_closing || is_void {
+                continue;
             }
+
+            if is_raw_text {
+                let remaining = &input[cursor..];
+                let Some((content_end, closing_end)) = find_raw_text_end(remaining, &tag_name) else {
+                    return Err(HtmlParseError::UnbalancedTag {
+                        expected: tag_name,
+                        found: "<eof>".into(),
+                    });
+                };
+                append_raw_text_if_present(&mut document, id, &remaining[..content_end])?;
+                cursor += closing_end;
+                continue;
+            }
+
+            stack.push(id);
         }
     }
 
@@ -314,6 +367,46 @@ mod tests {
                 .iter()
                 .any(|node| matches!(&node.kind, NodeKind::Text(text) if text == "A < B"))
         );
+    }
+
+    #[test]
+    fn raw_text_elements_do_not_parse_embedded_markup() {
+        let document = parse_document(
+            r#"<html><head><script>const x = "<div>"; if (a < b) { c(); }</script><style>.x::before { content: "<"; }</style></head><body><p>ok</p></body></html>"#,
+        )
+        .unwrap();
+
+        let script = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "script"))
+            .unwrap();
+        let script_text = document
+            .node(script.children[0])
+            .and_then(|node| match &node.kind {
+                NodeKind::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(script_text.contains("<div>"));
+        assert!(script_text.contains("a < b"));
+
+        let style = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "style"))
+            .unwrap();
+        assert_eq!(style.children.len(), 1);
+    }
+
+    #[test]
+    fn raw_text_end_tag_matching_is_case_insensitive() {
+        let document =
+            parse_document("<html><head><script>let x = 1;</ScRiPt></head><body></body></html>")
+                .unwrap();
+        assert!(document.nodes().iter().any(
+            |node| matches!(&node.kind, NodeKind::Element { tag } if tag == "script")
+        ));
     }
 
     #[test]
