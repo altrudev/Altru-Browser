@@ -1,6 +1,14 @@
 # Altru Browser
 
-**Code for Humanity.**
+<p align="center">
+  <img src="assets/brand/altru-browser-logo-approved.png" alt="Altru Browser — Code for Humanity" width="520">
+</p>
+
+<p align="center"><strong>Code for Humanity.</strong></p>
+
+![Altru Browser final product-direction concept art](assets/concept/altru-browser-final-concept.png)
+
+> **Concept art — product direction, not a shipping screenshot.** It communicates the broader Altru Browser direction: independent native browsing, research/create/solve workflows, Altru Companion, ACIR/Capability Compiler, local-first privacy, governed execution, and multi-platform targets. Verified implementation status remains documented below.
 
 Altru Browser is an independent, adaptive browser project from Altru.dev. Its native engine is being built to use only the capabilities a page actually needs while keeping browser semantics, security boundaries, and execution evidence explicit.
 
@@ -34,9 +42,11 @@ The approved shell is page-first and uses three explicit interface states:
 
 There is no permanent left sidebar, permanent right Page Intelligence panel, or permanent bottom toolbar in the approved direction.
 
-The canonical identity is the approved Ukrainian vyshyvanka **flower** mark. Older geometric-knot marks and earlier shell boards are not canonical and must not be presented as current product imagery.
+The canonical identity is the exact approved woven blue / wheat-gold / red / white geometric mark published at `assets/brand/altru-browser-logo-approved.png`. Its geometry, weave, proportions, color placement, wordmark, and “Code for Humanity” lockup must not be regenerated or reinterpreted.
 
-No product mockup is published in this repository unless it matches the approved Focus / Navigate / Inspect baseline and uses the exact approved flower asset. See `docs/BRAND.md` and `assets/README.md`.
+The published concept art is an approved **product-direction infographic**, not a claim that every depicted surface already ships. The implemented browser shell remains governed by the Focus / Navigate / Inspect HIO baseline; broader Research, Create, Solve, Local, Assist, Spaces, Altru Companion, and Capability Compiler surfaces are product/capability direction.
+
+Target operating systems are Windows, macOS, Linux, Android, and iOS. Current verification is Linux runtime verification plus compile verification for Windows, macOS, Android, and iOS. A PWA, if discussed at all, is described only as a **portable version**, never as an operating-system target. See `docs/BRAND.md`, `assets/README.md`, and `docs/PLATFORM-MATRIX.md`.
 
 ## Architecture
 
