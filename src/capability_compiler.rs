@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirMediaType, AcirSelectorChain, AcirSelectorCombinator, CapabilityEnvironment,
+    AcirMediaType, AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
@@ -392,7 +392,7 @@ pub fn compile_selector_capability(
 
     let chain = AcirSelectorChain {
         compounds: parts.into_iter().map(str::to_string).collect(),
-        combinators: vec![AcirSelectorCombinator::Descendant; parts.len() - 1],
+        combinators: vec![AcirSelectorRelation::Descendant; parts.len() - 1],
     };
     if !chain.is_well_formed() {
         return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
@@ -511,7 +511,7 @@ mod tests {
         assert_eq!(compiled.chain.compounds, vec![":root", ".card[data-mode=dark i]"]);
         assert_eq!(
             compiled.chain.combinators,
-            vec![AcirSelectorCombinator::Descendant]
+            vec![AcirSelectorRelation::Descendant]
         );
         assert_eq!(
             compiled.receipt.translation_id,
