@@ -35,6 +35,7 @@ pub struct Selector {
     pub id: Option<String>,
     pub classes: Vec<String>,
     pub attributes: Vec<AttributeSelector>,
+    pub root: bool,
     pub any_of: Vec<Selector>,
 }
 
@@ -42,7 +43,8 @@ impl Selector {
     pub fn specificity(&self) -> (u16, u16, u16) {
         let base = (
             u16::from(self.id.is_some()),
-            (self.classes.len() + self.attributes.len()).min(u16::MAX as usize) as u16,
+            (self.classes.len() + self.attributes.len() + usize::from(self.root))
+                .min(u16::MAX as usize) as u16,
             u16::from(self.tag.is_some()),
         );
         let nested = self
@@ -75,6 +77,10 @@ impl Selector {
         if let Some(expected) = &self.id
             && document.attribute(node, "id") != Some(expected.as_str())
         {
+            return false;
+        }
+
+        if self.root && candidate.parent != Some(document.root()) {
             return false;
         }
 
@@ -266,6 +272,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         id: None,
         classes: Vec::new(),
         attributes: Vec::new(),
+        root: false,
         any_of: Vec::new(),
     };
     let mut cursor = 0usize;
@@ -318,6 +325,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         && selector.id.is_none()
         && selector.classes.is_empty()
         && selector.attributes.is_empty()
+        && !selector.root
     {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
@@ -329,6 +337,17 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty() {
         return Err(CssError::UnsupportedSelector(input.into()));
+    }
+
+    if input == ":root" {
+        return Ok(Selector {
+            tag: None,
+            id: None,
+            classes: Vec::new(),
+            attributes: Vec::new(),
+            root: true,
+            any_of: Vec::new(),
+        });
     }
 
     if let Some(is_start) = input.find(":is(") {
@@ -564,6 +583,29 @@ mod tests {
 
         assert!(selector.matches(&document, image.id));
         assert_eq!(selector.specificity(), (0, 1, 1));
+    }
+
+    #[test]
+    fn root_selector_matches_only_document_element() {
+        let document = parse_document(
+            "<html><body><div id=\"child\"></div></body></html>",
+        )
+        .unwrap();
+        let html = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "html"))
+            .unwrap();
+        let div = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "div"))
+            .unwrap();
+        let selector = parse_selector(":root").unwrap();
+
+        assert!(selector.matches(&document, html.id));
+        assert!(!selector.matches(&document, div.id));
+        assert_eq!(selector.specificity(), (0, 1, 0));
     }
 
     #[test]
