@@ -114,15 +114,10 @@ impl CapabilityEnvironment {
 }
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcirSelectorCombinator {
-    Descendant,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcirSelectorChain {
     pub compounds: Vec<String>,
-    pub combinators: Vec<AcirSelectorCombinator>,
+    pub combinators: Vec<AcirSelectorRelation>,
 }
 
 impl AcirSelectorChain {
@@ -162,7 +157,7 @@ mod tests {
     fn selector_chain_requires_one_relation_between_compounds() {
         let chain = AcirSelectorChain {
             compounds: vec![":root".into(), ".card".into()],
-            combinators: vec![AcirSelectorCombinator::Descendant],
+            combinators: vec![AcirSelectorRelation::Descendant],
         };
         assert!(chain.is_well_formed());
     }
