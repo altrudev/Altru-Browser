@@ -10,6 +10,7 @@ use crate::native_dom::{NativeDocument, NodeId};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InteractionSnapshot {
     pub focused_node: Option<NodeId>,
+    pub focus_visible_node: Option<NodeId>,
     pub hovered_nodes: Vec<NodeId>,
     pub active_node: Option<NodeId>,
 }
@@ -23,6 +24,7 @@ impl InteractionSnapshot {
     ) -> bool {
         match predicate {
             AcirInteractionPredicate::Focus => self.focused_node == Some(node),
+            AcirInteractionPredicate::FocusVisible => self.focus_visible_node == Some(node),
             AcirInteractionPredicate::FocusWithin => {
                 self.focused_node.is_some_and(|focused| {
                     focused == node || document.ancestor_elements(focused).contains(&node)
@@ -46,6 +48,7 @@ mod tests {
 
         for predicate in [
             AcirInteractionPredicate::Focus,
+            AcirInteractionPredicate::FocusVisible,
             AcirInteractionPredicate::FocusWithin,
             AcirInteractionPredicate::Hover,
             AcirInteractionPredicate::Active,
@@ -61,6 +64,7 @@ mod tests {
         let button = document.append_element(container, "button").unwrap();
         let snapshot = InteractionSnapshot {
             focused_node: Some(button),
+            focus_visible_node: Some(button),
             ..InteractionSnapshot::default()
         };
 
@@ -68,6 +72,11 @@ mod tests {
             &document,
             button,
             AcirInteractionPredicate::Focus
+        ));
+        assert!(snapshot.matches(
+            &document,
+            button,
+            AcirInteractionPredicate::FocusVisible
         ));
         assert!(snapshot.matches(
             &document,
