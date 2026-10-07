@@ -8,7 +8,7 @@ use crate::capability_compiler::{
     compile_font_size_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
-    compile_stylesheet_capabilities,
+    compile_stylesheet_capabilities, compile_zero_length_capability,
 };
 use crate::capability_ir::{
     AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean, AcirSelectorRelation,
@@ -709,6 +709,9 @@ fn parse_declarations_with_translations(
                             });
                         }
                         Some(CssValue::Var(name.into()))
+                    } else if let Some(receipt) = compile_zero_length_capability(value)? {
+                        translations.push(receipt);
+                        Some(CssValue::Px(0.0))
                     } else if let Some(compiled) = compile_font_size_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -729,6 +732,9 @@ fn parse_declarations_with_translations(
                             });
                         }
                         Some(CssValue::Var(name.into()))
+                    } else if let Some(receipt) = compile_zero_length_capability(value)? {
+                        translations.push(receipt);
+                        Some(CssValue::Px(0.0))
                     } else if let Some(compiled) = compile_current_font_length_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -1299,6 +1305,32 @@ mod tests {
         let declarations = parse_declarations("future-property: 1; font-size: 18px;").unwrap();
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, "font-size");
+    }
+
+    #[test]
+    fn unitless_zero_normalizes_with_receipt_and_nonzero_unitless_fails() {
+        let compiled = parse_stylesheet_with_environment(
+            ".x { margin-bottom: 0; font-size: 0; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(compiled.stylesheet.rules[0]
+            .declarations
+            .iter()
+            .all(|declaration| matches!(declaration.value, CssValue::Px(0.0))));
+        assert_eq!(
+            compiled
+                .translations
+                .iter()
+                .filter(|receipt| receipt.translation_id == "css.length-zero.v1")
+                .count(),
+            2
+        );
+
+        assert!(matches!(
+            parse_declarations("margin-bottom: 1;"),
+            Err(CssError::InvalidValue { property, .. }) if property == "margin-bottom"
+        ));
     }
 
     #[test]

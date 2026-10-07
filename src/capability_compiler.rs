@@ -21,6 +21,7 @@ pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
+pub const CSS_LENGTH_ZERO_V1: &str = "css.length-zero.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -88,6 +89,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SUPPORTS_DECLARATION_V1,
         source_family: "css-supports-declaration",
         target_semantics: "acir.support-condition",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_LENGTH_ZERO_V1,
+        source_family: "css-unitless-zero-length",
+        target_semantics: "native.px-zero",
         status: TranslationStatus::Verified,
     },
 ];
@@ -291,6 +298,20 @@ pub fn compile_current_font_length_capability(
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
+    }))
+}
+
+pub fn compile_zero_length_capability(
+    input: &str,
+) -> Result<Option<TranslationReceipt>, CapabilityCompilerError> {
+    if input.trim() != "0" {
+        return Ok(None);
+    }
+    require_verified(CSS_LENGTH_ZERO_V1)?;
+    Ok(Some(TranslationReceipt {
+        translation_id: CSS_LENGTH_ZERO_V1.into(),
+        source_sha256: sha256(input),
+        decision: TranslationDecision::Admitted,
     }))
 }
 
@@ -826,6 +847,9 @@ fn is_css_global_keyword(value: &str) -> bool {
 }
 
 fn is_px_value(value: &str) -> bool {
+    if value.trim() == "0" {
+        return true;
+    }
     value
         .trim()
         .strip_suffix("px")
@@ -1185,6 +1209,14 @@ pub fn compile_stylesheet_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unitless_zero_length_compiles_but_nonzero_unitless_does_not() {
+        let zero = compile_zero_length_capability("0").unwrap().unwrap();
+        assert_eq!(zero.translation_id, CSS_LENGTH_ZERO_V1);
+        assert!(compile_zero_length_capability("0px").unwrap().is_none());
+        assert!(compile_zero_length_capability("1").unwrap().is_none());
+    }
 
     #[test]
     fn supports_declaration_condition_uses_altru_capability_registry() {
