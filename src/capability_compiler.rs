@@ -13,6 +13,7 @@ use crate::capability_ir::{
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
 pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
+pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
     TranslationSpec {
         id: CSS_SELECTOR_DESCENDANT_V1,
         source_family: "css-selector-descendant",
+        target_semantics: "acir.selector-chain",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_RELATIONS_V1,
+        source_family: "css-selector-relations",
         target_semantics: "acir.selector-chain",
         status: TranslationStatus::Verified,
     },
@@ -385,16 +392,28 @@ fn matching_brace(input: &str, open: usize) -> Result<usize, CapabilityCompilerE
 }
 
 
-fn split_top_level_descendants(input: &str) -> Result<Vec<&str>, CapabilityCompilerError> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
+fn parse_selector_chain(
+    input: &str,
+) -> Result<Option<AcirSelectorChain>, CapabilityCompilerError> {
+    let mut compounds = Vec::new();
+    let mut combinators = Vec::new();
+    let mut current = String::new();
     let mut bracket_depth = 0usize;
     let mut paren_depth = 0usize;
     let mut quote: Option<char> = None;
-    let mut in_separator = false;
+    let mut pending_space = false;
 
-    for (index, ch) in input.char_indices() {
+    let flush_current = |current: &mut String, compounds: &mut Vec<String>| {
+        let value = current.trim();
+        if !value.is_empty() {
+            compounds.push(value.to_string());
+        }
+        current.clear();
+    };
+
+    for ch in input.chars() {
         if let Some(active_quote) = quote {
+            current.push(ch);
             if ch == active_quote {
                 quote = None;
             }
@@ -402,38 +421,62 @@ fn split_top_level_descendants(input: &str) -> Result<Vec<&str>, CapabilityCompi
         }
 
         match ch {
-            '"' | '\'' => quote = Some(ch),
-            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            '"' | '\'' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '[' => {
+                bracket_depth = bracket_depth.saturating_add(1);
+                current.push(ch);
+            }
             ']' => {
                 if bracket_depth == 0 {
                     return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
                 }
                 bracket_depth -= 1;
+                current.push(ch);
             }
-            '(' => paren_depth = paren_depth.saturating_add(1),
+            '(' => {
+                paren_depth = paren_depth.saturating_add(1);
+                current.push(ch);
+            }
             ')' => {
                 if paren_depth == 0 {
                     return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
                 }
                 paren_depth -= 1;
-            }
-            '>' | '+' | '~' if bracket_depth == 0 && paren_depth == 0 => {
-                return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                current.push(ch);
             }
             ch if ch.is_whitespace() && bracket_depth == 0 && paren_depth == 0 => {
-                if !in_separator {
-                    let part = input[start..index].trim();
-                    if !part.is_empty() {
-                        parts.push(part);
-                    }
-                    in_separator = true;
+                if !current.trim().is_empty() {
+                    flush_current(&mut current, &mut compounds);
+                    pending_space = true;
                 }
             }
-            _ if in_separator && bracket_depth == 0 && paren_depth == 0 => {
-                start = index;
-                in_separator = false;
+            '>' | '+' | '~' if bracket_depth == 0 && paren_depth == 0 => {
+                if !current.trim().is_empty() {
+                    flush_current(&mut current, &mut compounds);
+                }
+                if compounds.is_empty() || combinators.len() >= compounds.len() {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                }
+                pending_space = false;
+                combinators.push(match ch {
+                    '>' => AcirSelectorRelation::Child,
+                    '+' => AcirSelectorRelation::AdjacentSibling,
+                    '~' => AcirSelectorRelation::GeneralSibling,
+                    _ => unreachable!(),
+                });
             }
-            _ => {}
+            _ => {
+                if pending_space {
+                    if combinators.len() < compounds.len() {
+                        combinators.push(AcirSelectorRelation::Descendant);
+                    }
+                    pending_space = false;
+                }
+                current.push(ch);
+            }
         }
     }
 
@@ -441,39 +484,46 @@ fn split_top_level_descendants(input: &str) -> Result<Vec<&str>, CapabilityCompi
         return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
     }
 
-    if !in_separator {
-        let tail = input[start..].trim();
-        if !tail.is_empty() {
-            parts.push(tail);
-        }
+    if !current.trim().is_empty() {
+        flush_current(&mut current, &mut compounds);
     }
 
-    Ok(parts)
+    if compounds.len() < 2 {
+        return Ok(None);
+    }
+
+    let chain = AcirSelectorChain {
+        compounds,
+        combinators,
+    };
+    if !chain.is_well_formed() {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+    Ok(Some(chain))
 }
 
 pub fn compile_selector_capability(
     input: &str,
 ) -> Result<Option<CompiledSelectorCapability>, CapabilityCompilerError> {
-    let parts = split_top_level_descendants(input)?;
-    if parts.len() < 2 {
+    let Some(chain) = parse_selector_chain(input)? else {
         return Ok(None);
-    }
-
-    require_verified(CSS_SELECTOR_DESCENDANT_V1)?;
-
-    let relation_count = parts.len() - 1;
-    let chain = AcirSelectorChain {
-        compounds: parts.into_iter().map(str::to_string).collect(),
-        combinators: vec![AcirSelectorRelation::Descendant; relation_count],
     };
-    if !chain.is_well_formed() {
-        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
-    }
+
+    let translation_id = if chain
+        .combinators
+        .iter()
+        .all(|relation| *relation == AcirSelectorRelation::Descendant)
+    {
+        CSS_SELECTOR_DESCENDANT_V1
+    } else {
+        CSS_SELECTOR_RELATIONS_V1
+    };
+    require_verified(translation_id)?;
 
     Ok(Some(CompiledSelectorCapability {
         chain,
         receipt: TranslationReceipt {
-            translation_id: CSS_SELECTOR_DESCENDANT_V1.into(),
+            translation_id: translation_id.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
@@ -592,8 +642,42 @@ mod tests {
     }
 
     #[test]
-    fn explicit_child_combinator_is_not_silently_lowered() {
-        assert!(compile_selector_capability(":root > .card").is_err());
+    fn selector_relation_family_compiles_child_and_siblings() {
+        let child = compile_selector_capability("main > .card").unwrap().unwrap();
+        assert_eq!(child.chain.combinators, vec![AcirSelectorRelation::Child]);
+        assert_eq!(child.receipt.translation_id, CSS_SELECTOR_RELATIONS_V1);
+
+        let adjacent = compile_selector_capability("h2 + p").unwrap().unwrap();
+        assert_eq!(
+            adjacent.chain.combinators,
+            vec![AcirSelectorRelation::AdjacentSibling]
+        );
+
+        let general = compile_selector_capability("h2 ~ p").unwrap().unwrap();
+        assert_eq!(
+            general.chain.combinators,
+            vec![AcirSelectorRelation::GeneralSibling]
+        );
+    }
+
+    #[test]
+    fn selector_relation_parser_preserves_nested_spaces() {
+        let compiled = compile_selector_capability(
+            "main > .card[data-mode=dark i] + p:is(.lead,.summary)",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            compiled.chain.compounds,
+            vec!["main", ".card[data-mode=dark i]", "p:is(.lead,.summary)"]
+        );
+        assert_eq!(
+            compiled.chain.combinators,
+            vec![
+                AcirSelectorRelation::Child,
+                AcirSelectorRelation::AdjacentSibling
+            ]
+        );
     }
 
     #[test]
