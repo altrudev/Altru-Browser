@@ -847,6 +847,13 @@ mod tests {
     }
 
     #[test]
+    fn attribute_only_selector_survives_full_selector_pipeline() {
+        let selector = parse_selector("[sizes^=\"auto,\" i]").unwrap();
+        assert_eq!(selector.attributes.len(), 1);
+        assert_eq!(selector.attributes[0].value, "auto,");
+    }
+
+    #[test]
     fn parses_is_with_case_insensitive_attribute_selectors() {
         let document =
             parse_document("<html><body><img sizes=\"AUTO, 100vw\"></body></html>").unwrap();
