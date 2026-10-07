@@ -6,9 +6,10 @@
 use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
-    AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirRelativeLength,
-    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
+    AcirAttributeOperator, AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature,
+    AcirEnvironmentPredicate, AcirInteractionPredicate, AcirLengthBasis, AcirMediaType,
+    AcirRelativeLength, AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation,
+    CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
@@ -16,6 +17,7 @@ pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
 pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
 pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1";
 pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
+pub const CSS_SELECTOR_ATTRIBUTE_V1: &str = "css.selector-attribute.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_BOOLEAN_V1,
         source_family: "css-selector-boolean",
         target_semantics: "acir.selector-boolean",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_ATTRIBUTE_V1,
+        source_family: "css-selector-attribute",
+        target_semantics: "acir.attribute-predicate",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -116,6 +124,15 @@ pub struct CompiledSelectorBooleanCapability {
     pub base_selector: String,
     pub alternatives: Vec<String>,
     pub operation: AcirSelectorBoolean,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledAttributeSelectorCapability {
+    pub name: String,
+    pub operator: AcirAttributeOperator,
+    pub value: String,
+    pub case_insensitive: bool,
     pub receipt: TranslationReceipt,
 }
 
@@ -600,6 +617,124 @@ fn split_selector_arguments(
     Ok(parts)
 }
 
+pub fn compile_attribute_selector_capability(
+    input: &str,
+) -> Result<Option<CompiledAttributeSelectorCapability>, CapabilityCompilerError> {
+    let input = input.trim();
+    let (body, case_insensitive) = if let Some(body) = input.strip_suffix(" i") {
+        (body.trim_end(), true)
+    } else if let Some(body) = input.strip_suffix(" I") {
+        (body.trim_end(), true)
+    } else {
+        (input, false)
+    };
+
+    let operators = [
+        ("~=", AcirAttributeOperator::IncludesWord),
+        ("|=", AcirAttributeOperator::DashMatch),
+        ("^=", AcirAttributeOperator::Prefix),
+        ("$=", AcirAttributeOperator::Suffix),
+        ("*=", AcirAttributeOperator::Substring),
+        ("=", AcirAttributeOperator::Equals),
+    ];
+
+    let Some((marker, operator, split_at)) = operators
+        .into_iter()
+        .filter_map(|(marker, operator)| body.find(marker).map(|index| (marker, operator, index)))
+        .min_by_key(|(_, _, index)| *index)
+    else {
+        return Ok(None);
+    };
+
+    let name = body[..split_at].trim().to_ascii_lowercase();
+    let raw_value = body[split_at + marker.len()..].trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':'))
+        || raw_value.is_empty()
+    {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    let value = if (raw_value.starts_with('"') && raw_value.ends_with('"'))
+        || (raw_value.starts_with('\'') && raw_value.ends_with('\''))
+    {
+        if raw_value.len() < 2 {
+            return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+        }
+        raw_value[1..raw_value.len() - 1].to_string()
+    } else {
+        if raw_value.chars().any(char::is_whitespace) {
+            return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+        }
+        raw_value.to_string()
+    };
+    if value.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    require_verified(CSS_SELECTOR_ATTRIBUTE_V1)?;
+
+    Ok(Some(CompiledAttributeSelectorCapability {
+        name,
+        operator,
+        value,
+        case_insensitive,
+        receipt: TranslationReceipt {
+            translation_id: CSS_SELECTOR_ATTRIBUTE_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+pub fn compile_attribute_selector_receipts(
+    selector: &str,
+) -> Result<Vec<TranslationReceipt>, CapabilityCompilerError> {
+    let mut receipts = Vec::new();
+    let mut bracket_depth = 0usize;
+    let mut start = 0usize;
+    let mut quote: Option<char> = None;
+
+    for (index, ch) in selector.char_indices() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '[' => {
+                if bracket_depth == 0 {
+                    start = index + ch.len_utf8();
+                }
+                bracket_depth += 1;
+            }
+            ']' => {
+                if bracket_depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(selector.into()));
+                }
+                bracket_depth -= 1;
+                if bracket_depth == 0 {
+                    let body = &selector[start..index];
+                    if let Some(compiled) = compile_attribute_selector_capability(body)? {
+                        receipts.push(compiled.receipt);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || bracket_depth != 0 {
+        return Err(CapabilityCompilerError::UnsupportedSelector(selector.into()));
+    }
+
+    Ok(receipts)
+}
+
 pub fn compile_selector_boolean_capability(
     input: &str,
 ) -> Result<Option<CompiledSelectorBooleanCapability>, CapabilityCompilerError> {
@@ -828,6 +963,43 @@ mod tests {
             compiled.receipt.translation_id,
             CSS_SELECTOR_DESCENDANT_V1
         );
+    }
+
+    #[test]
+    fn attribute_selector_family_compiles_all_deterministic_operators() {
+        let cases = [
+            ("lang|=en", AcirAttributeOperator::DashMatch, "en"),
+            ("class~=lead", AcirAttributeOperator::IncludesWord, "lead"),
+            ("href^=https", AcirAttributeOperator::Prefix, "https"),
+            ("href$=.pdf", AcirAttributeOperator::Suffix, ".pdf"),
+            ("style*=border-top-color", AcirAttributeOperator::Substring, "border-top-color"),
+            ("type=text", AcirAttributeOperator::Equals, "text"),
+        ];
+        for (source, expected_operator, expected_value) in cases {
+            let compiled = compile_attribute_selector_capability(source)
+                .unwrap()
+                .unwrap();
+            assert_eq!(compiled.operator, expected_operator, "{source}");
+            assert_eq!(compiled.value, expected_value, "{source}");
+            assert_eq!(compiled.receipt.translation_id, CSS_SELECTOR_ATTRIBUTE_V1);
+        }
+
+        let insensitive = compile_attribute_selector_capability("type=TEXT i")
+            .unwrap()
+            .unwrap();
+        assert!(insensitive.case_insensitive);
+    }
+
+    #[test]
+    fn attribute_receipt_scan_ignores_non_attribute_selector_syntax() {
+        let receipts = compile_attribute_selector_receipts(
+            "main > a[href^=\"https://\"][rel~=external]",
+        )
+        .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts
+            .iter()
+            .all(|receipt| receipt.translation_id == CSS_SELECTOR_ATTRIBUTE_V1));
     }
 
     #[test]
