@@ -207,45 +207,149 @@ fn find_matching_brace(
     ))
 }
 
-fn parse_media_predicate(
-    header: &str,
-) -> Result<EnvironmentPredicate, CapabilityCompileError> {
+fn parse_media_predicate(header: &str) -> Result<EnvironmentPredicate, CapabilityCompileError> {
     let condition = header
         .strip_prefix("@media")
         .ok_or_else(|| CapabilityCompileError::MalformedConditional(header.into()))?
         .trim();
 
-    let inner = condition
+    parse_media_expression(condition)
+        .map_err(|_| CapabilityCompileError::UnsupportedConditional(header.into()))
+}
+
+fn parse_media_expression(input: &str) -> Result<EnvironmentPredicate, ()> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(());
+    }
+
+    if let Some(rest) = input.strip_prefix("not ") {
+        return Ok(EnvironmentPredicate::Not(Box::new(parse_media_expression(rest)?)));
+    }
+
+    let parts = split_top_level_and(input)?;
+    if parts.len() > 1 {
+        return Ok(EnvironmentPredicate::All(
+            parts
+                .into_iter()
+                .map(parse_media_expression)
+                .collect::<Result<Vec<_>, _>>()?,
+        ));
+    }
+
+    if input.eq_ignore_ascii_case("screen") {
+        return Ok(EnvironmentPredicate::MediaTypeScreen);
+    }
+
+    let inner = input
         .strip_prefix('(')
         .and_then(|value| value.strip_suffix(')'))
-        .ok_or_else(|| CapabilityCompileError::UnsupportedConditional(header.into()))?
+        .ok_or(())?
         .trim();
 
-    let (feature, raw_value) = inner
-        .split_once(':')
-        .ok_or_else(|| CapabilityCompileError::UnsupportedConditional(header.into()))?;
-
-    if feature.trim() != "min-resolution" {
-        return Err(CapabilityCompileError::UnsupportedConditional(
-            header.into(),
-        ));
+    if inner == "prefers-reduced-motion" {
+        return Ok(EnvironmentPredicate::PrefersReducedMotion);
     }
 
+    let (feature, raw_value) = inner.split_once(':').ok_or(())?;
+    let feature = feature.trim();
     let raw_value = raw_value.trim();
-    let dpi = raw_value
-        .strip_suffix("dpi")
-        .ok_or_else(|| CapabilityCompileError::UnsupportedConditional(header.into()))?
-        .trim()
-        .parse::<u32>()
-        .map_err(|_| CapabilityCompileError::UnsupportedConditional(header.into()))?;
 
-    if dpi == 0 {
-        return Err(CapabilityCompileError::UnsupportedConditional(
-            header.into(),
-        ));
+    match feature {
+        "min-resolution" => {
+            let dpi = raw_value
+                .strip_suffix("dpi")
+                .ok_or(())?
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| ())?;
+            if dpi == 0 {
+                return Err(());
+            }
+            Ok(EnvironmentPredicate::MinResolutionDpi(dpi))
+        }
+        "min-width" => Ok(EnvironmentPredicate::MinViewportWidthMilliPx(
+            parse_css_px_to_milli(raw_value)?,
+        )),
+        "max-width" => Ok(EnvironmentPredicate::MaxViewportWidthMilliPx(
+            parse_css_px_to_milli(raw_value)?,
+        )),
+        _ => Err(()),
+    }
+}
+
+fn split_top_level_and(input: &str) -> Result<Vec<&str>, ()> {
+    let bytes = input.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut cursor = 0usize;
+    let mut start = 0usize;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'(' => depth += 1,
+            b')' => {
+                if depth == 0 {
+                    return Err(());
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+
+        if depth == 0
+            && bytes
+                .get(cursor..cursor.saturating_add(5))
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(b" and "))
+        {
+            let part = input[start..cursor].trim();
+            if part.is_empty() {
+                return Err(());
+            }
+            parts.push(part);
+            cursor += 5;
+            start = cursor;
+            continue;
+        }
+
+        cursor += 1;
     }
 
-    Ok(EnvironmentPredicate::MinResolutionDpi(dpi))
+    if depth != 0 {
+        return Err(());
+    }
+
+    let tail = input[start..].trim();
+    if tail.is_empty() {
+        return Err(());
+    }
+    parts.push(tail);
+    Ok(parts)
+}
+
+fn parse_css_px_to_milli(value: &str) -> Result<u32, ()> {
+    let number = value.trim().strip_suffix("px").ok_or(())?.trim();
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    let whole = whole.parse::<u32>().map_err(|_| ())?;
+
+    if fraction.len() > 3 || !fraction.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(());
+    }
+
+    let mut fractional = fraction.to_string();
+    while fractional.len() < 3 {
+        fractional.push('0');
+    }
+    let fractional = if fractional.is_empty() {
+        0
+    } else {
+        fractional.parse::<u32>().map_err(|_| ())?
+    };
+
+    whole
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_add(fractional))
+        .ok_or(())
 }
 
 #[cfg(test)]
@@ -256,7 +360,10 @@ mod tests {
     fn lowers_min_resolution_media_query_through_acir() {
         let source = "p { font-size: 18px; } @media (min-resolution:192dpi) { p { font-size: 22px; } }";
         let compiled =
-            compile_css_capabilities(source, &CapabilityEnvironment { resolution_dpi: 96 })
+            compile_css_capabilities(source, &CapabilityEnvironment {
+                resolution_dpi: 96,
+                ..CapabilityEnvironment::default()
+            })
                 .unwrap();
 
         assert!(compiled.lowered_source.contains("font-size: 18px"));
@@ -282,6 +389,27 @@ mod tests {
             compiled.receipts[0].decision,
             TranslationDecision::Included
         );
+    }
+
+    #[test]
+    fn compiles_observed_viewport_media_family() {
+        let source = "@media screen and (max-width:600px) { p { font-size: 16px; } }
+@media (min-width: 768px) and (max-width: 991.98px) { p { font-size: 18px; } }
+@media not (prefers-reduced-motion) { p { margin-top: 8px; } }";
+        let compiled = compile_css_capabilities(
+            source,
+            &CapabilityEnvironment {
+                viewport_width_milli_px: 800_000,
+                prefers_reduced_motion: false,
+                ..CapabilityEnvironment::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!compiled.lowered_source.contains("font-size: 16px"));
+        assert!(compiled.lowered_source.contains("font-size: 18px"));
+        assert!(compiled.lowered_source.contains("margin-top: 8px"));
+        assert_eq!(compiled.receipts.len(), 3);
     }
 
     #[test]
