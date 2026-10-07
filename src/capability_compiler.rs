@@ -381,7 +381,13 @@ mod tests {
     fn includes_media_body_when_environment_satisfies_predicate() {
         let source = "@media (min-resolution: 192dpi) { p { font-size: 22px; } }";
         let compiled =
-            compile_css_capabilities(source, &CapabilityEnvironment { resolution_dpi: 192 })
+            compile_css_capabilities(
+                source,
+                &CapabilityEnvironment {
+                    resolution_dpi: 192,
+                    ..CapabilityEnvironment::default()
+                },
+            )
                 .unwrap();
 
         assert!(compiled.lowered_source.contains("font-size: 22px"));
