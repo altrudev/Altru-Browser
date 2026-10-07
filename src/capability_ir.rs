@@ -30,6 +30,16 @@ pub enum AcirMediaType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirAttributeOperator {
+    Equals,
+    IncludesWord,
+    DashMatch,
+    Prefix,
+    Suffix,
+    Substring,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirInteractionPredicate {
     Focus,
     FocusWithin,
@@ -188,6 +198,12 @@ mod tests {
             ],
         };
         assert!(environment.evaluate_condition(&condition));
+    }
+
+    #[test]
+    fn attribute_operators_are_canonical_semantics() {
+        assert_ne!(AcirAttributeOperator::Prefix, AcirAttributeOperator::Substring);
+        assert_ne!(AcirAttributeOperator::IncludesWord, AcirAttributeOperator::DashMatch);
     }
 
     #[test]
