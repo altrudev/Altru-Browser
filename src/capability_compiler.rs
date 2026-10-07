@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
     AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirRelativeLength,
-    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
+    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirSupportCondition,
+    CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
@@ -19,6 +20,7 @@ pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
 pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
+pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -80,6 +82,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_LENGTH_EM_V1,
         source_family: "css-length-em",
         target_semantics: "acir.relative-length.current-font",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SUPPORTS_DECLARATION_V1,
+        source_family: "css-supports-declaration",
+        target_semantics: "acir.support-condition",
         status: TranslationStatus::Verified,
     },
 ];
@@ -150,6 +158,7 @@ pub enum CapabilityCompilerError {
     MalformedAtRule,
     UnsupportedMediaQuery(String),
     UnsupportedSelector(String),
+    UnsupportedSupportCondition(String),
     UnsupportedValue(String),
     UnverifiedTranslation(String),
 }
@@ -814,35 +823,348 @@ pub fn compile_selector_capability(
     }))
 }
 
-pub fn compile_stylesheet_capabilities(
+fn is_css_global_keyword(value: &str) -> bool {
+    matches!(value.trim(), "inherit" | "initial" | "unset")
+}
+
+fn is_px_value(value: &str) -> bool {
+    value
+        .trim()
+        .strip_suffix("px")
+        .is_some_and(|number| number.trim().parse::<f32>().is_ok_and(|v| v.is_finite() && v >= 0.0))
+}
+
+fn is_em_value(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.ends_with("rem") {
+        return false;
+    }
+    normalized
+        .strip_suffix("em")
+        .is_some_and(|number| parse_decimal_milli_value(number).is_ok())
+}
+
+fn css_declaration_supported(property: &str, value: &str) -> bool {
+    let property = property.trim().to_ascii_lowercase();
+    let value = value.trim();
+
+    if property.starts_with("--") {
+        return !value.is_empty();
+    }
+
+    if is_css_global_keyword(value) {
+        return matches!(
+            property.as_str(),
+            "display"
+                | "flex-direction"
+                | "grid-template-columns"
+                | "font-size"
+                | "margin-top"
+                | "margin-bottom"
+                | "padding-top"
+                | "padding-right"
+                | "padding-bottom"
+                | "padding-left"
+                | "gap"
+        );
+    }
+
+    match property.as_str() {
+        "display" => matches!(
+            value,
+            "none"
+                | "block"
+                | "inline"
+                | "inline-block"
+                | "flex"
+                | "inline-flex"
+                | "grid"
+                | "inline-grid"
+                | "table"
+                | "inline-table"
+                | "table-row"
+                | "table-cell"
+                | "table-row-group"
+                | "table-header-group"
+                | "table-footer-group"
+                | "table-caption"
+        ),
+        "flex-direction" => matches!(value, "row" | "column"),
+        "grid-template-columns" => {
+            let tracks = value.split_ascii_whitespace().collect::<Vec<_>>();
+            !tracks.is_empty() && tracks.len() <= 12 && tracks.iter().all(|track| *track == "1fr")
+        }
+        "font-size" => {
+            value.starts_with("var(") && value.ends_with(')')
+                || is_px_value(value)
+                || compile_font_size_capability(value).is_ok_and(|compiled| compiled.is_some())
+        }
+        "margin-top"
+        | "margin-bottom"
+        | "padding-top"
+        | "padding-right"
+        | "padding-bottom"
+        | "padding-left"
+        | "gap" => {
+            value.starts_with("var(") && value.ends_with(')')
+                || is_px_value(value)
+                || is_em_value(value)
+        }
+        _ => false,
+    }
+}
+
+fn matching_outer_parenthesis(input: &str) -> Option<usize> {
+    if !input.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    for (index, ch) in input.char_indices() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn strip_support_wrapping_parens(mut input: &str) -> &str {
+    loop {
+        let trimmed = input.trim();
+        let Some(close) = matching_outer_parenthesis(trimmed) else {
+            return trimmed;
+        };
+        if close + 1 != trimmed.len() {
+            return trimmed;
+        }
+        input = &trimmed[1..close];
+    }
+}
+
+fn split_support_top_level<'a>(
+    input: &'a str,
+    operator: &str,
+) -> Result<Vec<&'a str>, CapabilityCompilerError> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut start = 0usize;
+    let mut index = 0usize;
+
+    while index < input.len() {
+        let ch = input[index..]
+            .chars()
+            .next()
+            .ok_or_else(|| CapabilityCompilerError::UnsupportedSupportCondition(input.into()))?;
+        let width = ch.len_utf8();
+
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            index += width;
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedSupportCondition(input.into()));
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+
+        if depth == 0 && input[index..].starts_with(operator) {
+            let part = input[start..index].trim();
+            if part.is_empty() {
+                return Err(CapabilityCompilerError::UnsupportedSupportCondition(input.into()));
+            }
+            parts.push(part);
+            index += operator.len();
+            start = index;
+            continue;
+        }
+        index += width;
+    }
+
+    if quote.is_some() || depth != 0 {
+        return Err(CapabilityCompilerError::UnsupportedSupportCondition(input.into()));
+    }
+    let tail = input[start..].trim();
+    if tail.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedSupportCondition(input.into()));
+    }
+    parts.push(tail);
+    Ok(parts)
+}
+
+fn parse_support_condition(raw: &str) -> Result<AcirSupportCondition, CapabilityCompilerError> {
+    require_verified(CSS_SUPPORTS_DECLARATION_V1)?;
+    let input = strip_support_wrapping_parens(raw);
+
+    if let Some(rest) = input.strip_prefix("not ") {
+        return Ok(AcirSupportCondition::Not(Box::new(parse_support_condition(rest)?)));
+    }
+
+    let any = split_support_top_level(input, " or ")?;
+    if any.len() > 1 {
+        return Ok(AcirSupportCondition::Any(
+            any.into_iter()
+                .map(parse_support_condition)
+                .collect::<Result<Vec<_>, _>>()?,
+        ));
+    }
+
+    let all = split_support_top_level(input, " and ")?;
+    if all.len() > 1 {
+        return Ok(AcirSupportCondition::All(
+            all.into_iter()
+                .map(parse_support_condition)
+                .collect::<Result<Vec<_>, _>>()?,
+        ));
+    }
+
+    let declaration = strip_support_wrapping_parens(input);
+    let (property, value) = declaration
+        .split_once(':')
+        .ok_or_else(|| CapabilityCompilerError::UnsupportedSupportCondition(raw.into()))?;
+    if property.trim().is_empty() || value.trim().is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedSupportCondition(raw.into()));
+    }
+
+    Ok(AcirSupportCondition::CssDeclaration {
+        property: property.trim().to_ascii_lowercase(),
+        value: value.trim().to_string(),
+    })
+}
+
+fn evaluate_support_condition(condition: &AcirSupportCondition) -> bool {
+    match condition {
+        AcirSupportCondition::CssDeclaration { property, value } => {
+            css_declaration_supported(property, value)
+        }
+        AcirSupportCondition::All(conditions) => {
+            conditions.iter().all(evaluate_support_condition)
+        }
+        AcirSupportCondition::Any(conditions) => {
+            conditions.iter().any(evaluate_support_condition)
+        }
+        AcirSupportCondition::Not(condition) => !evaluate_support_condition(condition),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConditionalAtRuleKind {
+    Media,
+    Supports,
+}
+
+fn next_top_level_conditional(input: &str) -> Option<(usize, ConditionalAtRuleKind)> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut index = 0usize;
+
+    while index < input.len() {
+        let ch = input[index..].chars().next()?;
+        let width = ch.len_utf8();
+
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            index += width;
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '@' if depth == 0 => {
+                if input[index..].starts_with("@media") {
+                    return Some((index, ConditionalAtRuleKind::Media));
+                }
+                if input[index..].starts_with("@supports") {
+                    return Some((index, ConditionalAtRuleKind::Supports));
+                }
+            }
+            _ => {}
+        }
+        index += width;
+    }
+    None
+}
+
+fn lower_stylesheet_conditionals(
     input: &str,
     environment: CapabilityEnvironment,
-) -> Result<CompiledCapabilitySource, CapabilityCompilerError> {
+    receipts: &mut Vec<TranslationReceipt>,
+) -> Result<String, CapabilityCompilerError> {
     let mut output = String::with_capacity(input.len());
-    let mut receipts = Vec::new();
     let mut cursor = 0usize;
 
-    while let Some(relative) = input[cursor..].find("@media") {
-        let media_start = cursor + relative;
-        output.push_str(&input[cursor..media_start]);
+    while let Some((relative, kind)) = next_top_level_conditional(&input[cursor..]) {
+        let start = cursor + relative;
+        output.push_str(&input[cursor..start]);
 
-        let header_start = media_start + "@media".len();
+        let marker = match kind {
+            ConditionalAtRuleKind::Media => "@media",
+            ConditionalAtRuleKind::Supports => "@supports",
+        };
+        let header_start = start + marker.len();
         let open_relative = input[header_start..]
             .find('{')
             .ok_or(CapabilityCompilerError::MalformedAtRule)?;
         let open = header_start + open_relative;
         let close = matching_brace(input, open)?;
-        let query = input[header_start..open].trim();
-        let condition = lower_media_query(query)?;
-        let source_construct = &input[media_start..=close];
-        let decision = if environment.evaluate_condition(&condition) {
-            output.push_str(&input[open + 1..close]);
+        let condition_source = input[header_start..open].trim();
+        let source_construct = &input[start..=close];
+
+        let (translation_id, admitted) = match kind {
+            ConditionalAtRuleKind::Media => {
+                let condition = lower_media_query(condition_source)?;
+                (
+                    CSS_MEDIA_ENVIRONMENT_V1,
+                    environment.evaluate_condition(&condition),
+                )
+            }
+            ConditionalAtRuleKind::Supports => {
+                let condition = parse_support_condition(condition_source)?;
+                (
+                    CSS_SUPPORTS_DECLARATION_V1,
+                    evaluate_support_condition(&condition),
+                )
+            }
+        };
+
+        let decision = if admitted {
+            let lowered_body =
+                lower_stylesheet_conditionals(&input[open + 1..close], environment, receipts)?;
+            output.push_str(&lowered_body);
             TranslationDecision::Admitted
         } else {
             TranslationDecision::Elided
         };
         receipts.push(TranslationReceipt {
-            translation_id: CSS_MEDIA_ENVIRONMENT_V1.into(),
+            translation_id: translation_id.into(),
             source_sha256: sha256(source_construct),
             decision,
         });
@@ -850,15 +1172,62 @@ pub fn compile_stylesheet_capabilities(
     }
 
     output.push_str(&input[cursor..]);
-    Ok(CompiledCapabilitySource {
-        source: output,
-        receipts,
-    })
+    Ok(output)
+}
+
+pub fn compile_stylesheet_capabilities(
+    input: &str,
+    environment: CapabilityEnvironment,
+) -> Result<CompiledCapabilitySource, CapabilityCompilerError> {
+    let mut receipts = Vec::new();
+    let source = lower_stylesheet_conditionals(input, environment, &mut receipts)?;
+    Ok(CompiledCapabilitySource { source, receipts })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supports_declaration_condition_uses_altru_capability_registry() {
+        let unsupported = compile_stylesheet_capabilities(
+            "@supports ((-webkit-mask-image:none) or (mask-image:none)) { .x { display: block; } }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(!unsupported.source.contains(".x"));
+        assert_eq!(unsupported.receipts.len(), 1);
+        assert_eq!(
+            unsupported.receipts[0].translation_id,
+            CSS_SUPPORTS_DECLARATION_V1
+        );
+        assert_eq!(
+            unsupported.receipts[0].decision,
+            TranslationDecision::Elided
+        );
+
+        let supported = compile_stylesheet_capabilities(
+            "@supports (display: grid) { .x { display: grid; } }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(supported.source.contains("display: grid"));
+        assert_eq!(
+            supported.receipts[0].decision,
+            TranslationDecision::Admitted
+        );
+    }
+
+    #[test]
+    fn nested_media_and_supports_are_lowered_recursively() {
+        let compiled = compile_stylesheet_capabilities(
+            "@media (min-width:768px) { @supports (display: grid) { .x { display: grid; } } }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(compiled.source.contains(".x"));
+        assert_eq!(compiled.receipts.len(), 2);
+    }
 
     #[test]
     fn observed_cnet_media_vocabulary_lowers_through_one_acir_family() {
