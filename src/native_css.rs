@@ -3,12 +3,14 @@
 //! This is deliberately a bounded CSS subset. Unsupported selectors fail
 //! closed; unknown properties follow CSS error handling and are ignored.
 
+use crate::companion_translation::CapabilityRuntime;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CssError {
     MalformedRule,
     UnsupportedSelector(String),
+    UnsupportedAtRule(String),
     MalformedDeclaration(String),
     InvalidValue { property: String, value: String },
     UnresolvedCustomProperty(String),
@@ -494,33 +496,97 @@ fn strip_css_comments(input: &str) -> Result<String, CssError> {
     Ok(output)
 }
 
-pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
+fn find_matching_brace(input: &str, open: usize) -> Result<usize, CssError> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    for (relative, ch) in input[open..].char_indices() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 {
+                    return Err(CssError::MalformedRule);
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(open + relative);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(CssError::MalformedRule)
+}
+
+fn append_sheet(target: &mut Vec<Rule>, source: StyleSheet, order: &mut usize) {
+    for mut rule in source.rules {
+        rule.order = *order;
+        *order += 1;
+        target.push(rule);
+    }
+}
+
+pub fn parse_stylesheet_with_runtime(
+    input: &str,
+    runtime: Option<&CapabilityRuntime>,
+) -> Result<StyleSheet, CssError> {
     let cleaned = strip_css_comments(input)?;
     let mut rules = Vec::new();
     let mut rest = cleaned.as_str();
     let mut order = 0usize;
 
     while !rest.trim().is_empty() {
+        rest = rest.trim_start();
+
         let Some(open) = rest.find('{') else {
             return Err(CssError::MalformedRule);
         };
-        let Some(close_rel) = rest[open + 1..].find('}') else {
-            return Err(CssError::MalformedRule);
-        };
-        let close = open + 1 + close_rel;
+        let close = find_matching_brace(rest, open)?;
+        let prelude = rest[..open].trim();
+        let body = &rest[open + 1..close];
 
-        let selector = parse_selector(rest[..open].trim())?;
-        let declarations = parse_declarations(&rest[open + 1..close])?;
-        rules.push(Rule {
-            selector,
-            declarations,
-            order,
-        });
-        order += 1;
+        if prelude.starts_with("@media") {
+            let Some(runtime) = runtime else {
+                return Err(CssError::UnsupportedAtRule(prelude.into()));
+            };
+            match runtime
+                .evaluate_css_media(prelude)
+                .map_err(|_| CssError::UnsupportedAtRule(prelude.into()))?
+            {
+                Some(true) => {
+                    let nested = parse_stylesheet_with_runtime(body, Some(runtime))?;
+                    append_sheet(&mut rules, nested, &mut order);
+                }
+                Some(false) => {}
+                None => return Err(CssError::UnsupportedAtRule(prelude.into())),
+            }
+        } else if prelude.starts_with('@') {
+            return Err(CssError::UnsupportedAtRule(prelude.into()));
+        } else {
+            let selector = parse_selector(prelude)?;
+            let declarations = parse_declarations(body)?;
+            rules.push(Rule {
+                selector,
+                declarations,
+                order,
+            });
+            order += 1;
+        }
+
         rest = &rest[close + 1..];
     }
 
     Ok(StyleSheet { rules })
+}
+
+pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
+    parse_stylesheet_with_runtime(input, None)
 }
 
 pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet, CssError> {
@@ -539,7 +605,8 @@ pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet,
             }
         }
     }
-    parse_stylesheet(&combined)
+    let runtime = CapabilityRuntime::load_default().ok();
+    parse_stylesheet_with_runtime(&combined, runtime.as_ref())
 }
 
 #[cfg(test)]
@@ -639,6 +706,91 @@ mod tests {
         assert!(matches!(
             parse_stylesheet("/* broken p { font-size: 20px; }"),
             Err(CssError::MalformedRule)
+        ));
+    }
+
+    #[test]
+    fn promoted_media_translation_can_lower_at_rule() {
+        use crate::companion_translation::{
+            AcirNode, AcirProgram, CapabilityEnvironment, NumericComparator, PromotedTranslation,
+            TranslationPack, ACIR_SCHEMA, TRANSLATION_PACK_SCHEMA,
+        };
+        use serde::Serialize;
+        use sha2::{Digest, Sha256};
+
+        #[derive(Serialize)]
+        struct SourceConstruct<'a> {
+            language: &'a str,
+            feature: &'a str,
+            source: &'a str,
+        }
+
+        let prelude = "@media (min-resolution:192dpi)";
+        let bytes = serde_json::to_vec(&SourceConstruct {
+            language: "css",
+            feature: "media:min-resolution",
+            source: prelude,
+        })
+        .unwrap();
+        let signature = hex::encode(Sha256::digest(bytes));
+        let pack = TranslationPack {
+            schema: TRANSLATION_PACK_SCHEMA.into(),
+            pack_id: "browser-css-foundation-v1".into(),
+            target: "altru-browser".into(),
+            registry_hash: "a".repeat(64),
+            graph_hash: "b".repeat(64),
+            translations: vec![PromotedTranslation {
+                schema: "altru.companion.translation.v1".into(),
+                translation_id: "css-media-min-resolution-v1".into(),
+                source_signature: signature,
+                acir: AcirProgram {
+                    schema: ACIR_SCHEMA.into(),
+                    source_language: "css".into(),
+                    source_feature: "media:min-resolution".into(),
+                    nodes: vec![AcirNode::EnvironmentPredicate {
+                        key: "display.resolution".into(),
+                        comparator: NumericComparator::AtLeast,
+                        value_milli: 192_000,
+                        unit: "dpi".into(),
+                    }],
+                },
+                semantic_fidelity_ppm: 1_000_000,
+                authority_cost_ppm: 0,
+                evidence_refs: vec!["frequency:verified".into()],
+                verification_hash: "c".repeat(64),
+            }],
+        };
+
+        let low = CapabilityRuntime::from_pack(
+            pack.clone(),
+            CapabilityEnvironment {
+                display_resolution_milli_dpi: 96_000,
+            },
+        )
+        .unwrap();
+        let high = CapabilityRuntime::from_pack(
+            pack,
+            CapabilityEnvironment {
+                display_resolution_milli_dpi: 220_000,
+            },
+        )
+        .unwrap();
+
+        let css = "@media (min-resolution:192dpi) { p { font-size: 20px; } }";
+        assert!(parse_stylesheet_with_runtime(css, Some(&low))
+            .unwrap()
+            .rules
+            .is_empty());
+        let included = parse_stylesheet_with_runtime(css, Some(&high)).unwrap();
+        assert_eq!(included.rules.len(), 1);
+        assert_eq!(included.rules[0].selector.tag.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn unpromoted_media_at_rule_still_fails_closed() {
+        assert!(matches!(
+            parse_stylesheet("@media (min-resolution:192dpi) { p { font-size: 20px; } }"),
+            Err(CssError::UnsupportedAtRule(_))
         ));
     }
 
