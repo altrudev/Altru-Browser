@@ -302,6 +302,7 @@ impl AltruBrowserApp {
                 );
                 if self.request_url_focus {
                     response.request_focus();
+                    select_all_text(ctx, response.id, &self.url_input);
                     self.request_url_focus = false;
                 }
                 if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
@@ -544,6 +545,17 @@ fn configure_style(ctx: &egui::Context, dark: bool) {
     style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(12);
     style.visuals.selection.bg_fill = Color32::from_rgb(65, 139, 232);
     ctx.set_style(style);
+}
+
+fn select_all_text(ctx: &egui::Context, widget_id: egui::Id, value: &str) {
+    let mut state = egui::TextEdit::load_state(ctx, widget_id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::default(),
+            egui::text::CCursor::new(value.chars().count()),
+        )));
+    state.store(ctx, widget_id);
 }
 
 fn normalize_target(input: &str) -> String {
