@@ -734,7 +734,7 @@ mod tests {
     fn media_resolution_is_lowered_before_selector_parsing() {
         let compiled = parse_stylesheet_with_environment(
             "@media (min-resolution:192dpi) { p { font-size: 20px; } } h1 { font-size: 24px; }",
-            CapabilityEnvironment::new(96_000),
+            CapabilityEnvironment::desktop(800),
         )
         .unwrap();
         assert_eq!(compiled.stylesheet.rules.len(), 1);
