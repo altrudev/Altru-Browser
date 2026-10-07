@@ -38,6 +38,13 @@ pub enum AcirInteractionPredicate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirSelectorBoolean {
+    Any,
+    None,
+    AnyZeroSpecificity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirSelectorRelation {
     Descendant,
     Child,
@@ -190,6 +197,15 @@ mod tests {
             AcirInteractionPredicate::FocusWithin,
             AcirInteractionPredicate::Active
         );
+    }
+
+    #[test]
+    fn selector_boolean_modes_preserve_specificity_semantics() {
+        assert_ne!(
+            AcirSelectorBoolean::Any,
+            AcirSelectorBoolean::AnyZeroSpecificity
+        );
+        assert_ne!(AcirSelectorBoolean::None, AcirSelectorBoolean::Any);
     }
 
     #[test]
