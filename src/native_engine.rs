@@ -267,9 +267,9 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_selector_fails_closed() {
+    fn unsupported_selector_relation_fails_closed() {
         let result = execute_native_document(
-            "<html><head><style>main p { font-size: 20px; }</style></head><body><main><p>X</p></main></body></html>",
+            "<html><head><style>main > p { font-size: 20px; }</style></head><body><main><p>X</p></main></body></html>",
         );
         assert!(matches!(
             result,
