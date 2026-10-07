@@ -561,7 +561,22 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         Err(error) => return Err(error.into()),
     };
     if let Some(compiled) = compiled_state {
-        let mut selector = parse_selector(&compiled.base_selector)?;
+        let mut selector = if compiled.base_selector.is_empty() {
+            Selector {
+                tag: None,
+                id: None,
+                classes: Vec::new(),
+                attributes: Vec::new(),
+                root: false,
+                states: Vec::new(),
+                any_of: Vec::new(),
+                where_any_of: Vec::new(),
+                none_of: Vec::new(),
+                ancestor: None,
+            }
+        } else {
+            parse_selector(&compiled.base_selector)?
+        };
         selector.states.extend(compiled.predicates);
         return Ok(selector);
     }
@@ -934,6 +949,25 @@ mod tests {
         let selector = parse_selector("[sizes^=\"auto,\" i]").unwrap();
         assert_eq!(selector.attributes.len(), 1);
         assert_eq!(selector.attributes[0].value, "auto,");
+    }
+
+    #[test]
+    fn bare_interaction_selector_matches_only_explicit_state() {
+        let document =
+            parse_document("<html><body><button>Go</button><div>Other</div></body></html>").unwrap();
+        let button = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "button"))
+            .unwrap();
+        let selector = parse_selector(":active").unwrap();
+
+        assert!(!selector.matches(&document, button.id));
+        let interaction = InteractionSnapshot {
+            active_node: Some(button.id),
+            ..InteractionSnapshot::default()
+        };
+        assert!(selector.matches_with_interaction(&document, button.id, &interaction));
     }
 
     #[test]
