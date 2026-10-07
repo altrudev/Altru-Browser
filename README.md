@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/brand/altru-browser-wordmark.svg" alt="Altru Browser — Code for Humanity" width="760">
-</p>
-
 # Altru Browser
 
 **Code for Humanity.**
@@ -30,19 +26,17 @@ No capability is advertised as production-ready until its evidence gate is satis
 
 ## Product direction
 
-The browser shell is intentionally familiar enough to use immediately while avoiding a Chrome/Safari clone. The current visual direction keeps a top URL bar, makes adaptive resource decisions visible, and uses a restrained Ukrainian vyshyvanka-inspired geometry as structural identity.
+The approved shell is page-first and uses three explicit interface states:
 
-### Desktop
+- **Focus** — the page occupies almost the entire window and browser chrome recedes.
+- **Navigate** — a thin top bar exposes back, forward, address/search, and minimal browser controls.
+- **Inspect** — Page Intelligence appears temporarily and on demand for engine, resource, and evidence details.
 
-![Altru Browser desktop shell direction](assets/mockups/desktop-shell.png)
+There is no permanent left sidebar, permanent right Page Intelligence panel, or permanent bottom toolbar in the approved direction.
 
-### Mobile
+The canonical identity is the approved Ukrainian vyshyvanka **flower** mark. Older geometric-knot marks and earlier shell boards are not canonical and must not be presented as current product imagery.
 
-<p align="center">
-  <img src="assets/mockups/mobile-shell.png" alt="Altru Browser mobile shell direction" width="390">
-</p>
-
-These are design-direction artifacts, not screenshots of a production-ready browser. See `docs/BRAND.md` and `assets/README.md`.
+No product mockup is published in this repository unless it matches the approved Focus / Navigate / Inspect baseline and uses the exact approved flower asset. See `docs/BRAND.md` and `assets/README.md`.
 
 ## Architecture
 
