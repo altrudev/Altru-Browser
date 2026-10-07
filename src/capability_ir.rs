@@ -29,6 +29,11 @@ pub enum AcirMediaType {
     Screen,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirSelectorRelation {
+    Descendant,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcirEnvironmentCondition {
     pub media_type: Option<AcirMediaType>,
