@@ -623,9 +623,8 @@ fn parse_declarations_with_translations(
         } else {
             match property.as_str() {
                 "display" => match value {
-                    "none" | "block" | "inline" | "flex" | "grid" => {
-                        Some(CssValue::Display(value.into()))
-                    }
+                    "none" | "block" | "inline" | "inline-block" | "flex" | "inline-flex"
+                    | "grid" | "inline-grid" => Some(CssValue::Display(value.into()))
                     _ => {
                         return Err(CssError::InvalidValue {
                             property,
@@ -1213,6 +1212,17 @@ mod tests {
         let declarations = parse_declarations("future-property: 1; font-size: 18px;").unwrap();
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, "font-size");
+    }
+
+    #[test]
+    fn parses_composite_display_family() {
+        for value in ["inline-block", "inline-flex", "inline-grid"] {
+            let declarations = parse_declarations(&format!("display: {value};")).unwrap();
+            assert!(matches!(
+                &declarations[0].value,
+                CssValue::Display(parsed) if parsed == value
+            ));
+        }
     }
 
     #[test]
