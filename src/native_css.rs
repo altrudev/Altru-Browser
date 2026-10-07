@@ -540,6 +540,8 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             root: true,
             states: Vec::new(),
             any_of: Vec::new(),
+            where_any_of: Vec::new(),
+            none_of: Vec::new(),
             ancestor: None,
         });
     }
