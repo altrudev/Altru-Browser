@@ -32,6 +32,7 @@ pub enum AcirMediaType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirInteractionPredicate {
     Focus,
+    FocusVisible,
     FocusWithin,
     Hover,
     Active,
@@ -208,6 +209,7 @@ mod tests {
 
     #[test]
     fn interaction_predicates_are_explicit_semantics() {
+        assert_ne!(AcirInteractionPredicate::Focus, AcirInteractionPredicate::FocusVisible);
         assert_ne!(AcirInteractionPredicate::Focus, AcirInteractionPredicate::Hover);
         assert_ne!(
             AcirInteractionPredicate::FocusWithin,

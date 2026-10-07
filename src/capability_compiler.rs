@@ -757,6 +757,7 @@ pub fn compile_selector_state_capability(
     loop {
         let normalized = base.to_ascii_lowercase();
         let matched = [
+            (":focus-visible", AcirInteractionPredicate::FocusVisible),
             (":focus-within", AcirInteractionPredicate::FocusWithin),
             (":focus", AcirInteractionPredicate::Focus),
             (":hover", AcirInteractionPredicate::Hover),
@@ -776,9 +777,6 @@ pub fn compile_selector_state_capability(
 
     if predicates.is_empty() {
         return Ok(None);
-    }
-    if base.is_empty() {
-        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
     }
 
     require_verified(CSS_SELECTOR_INTERACTION_V1)?;
@@ -1399,8 +1397,14 @@ mod tests {
     }
 
     #[test]
-    fn state_only_selector_is_not_silently_generalized() {
-        assert!(compile_selector_state_capability(":focus").is_err());
+    fn bare_known_interaction_state_is_bounded_and_unknown_state_fails_closed() {
+        let compiled = compile_selector_state_capability(":focus")
+            .unwrap()
+            .unwrap();
+        assert!(compiled.base_selector.is_empty());
+        assert_eq!(compiled.predicates, vec![AcirInteractionPredicate::Focus]);
+
+        assert!(compile_selector_state_capability(":visited").unwrap().is_none());
     }
 
     #[test]
@@ -1454,6 +1458,31 @@ mod tests {
 
         assert!(compile_font_size_capability("1rem").unwrap().is_none());
         assert!(compile_font_size_capability("16px").unwrap().is_none());
+    }
+
+    #[test]
+    fn bare_interaction_state_compiles_without_fabricating_universal_syntax() {
+        let compiled = compile_selector_state_capability(":active")
+            .unwrap()
+            .unwrap();
+        assert!(compiled.base_selector.is_empty());
+        assert_eq!(compiled.predicates, vec![AcirInteractionPredicate::Active]);
+    }
+
+    #[test]
+    fn focus_visible_compiles_as_distinct_interaction_state() {
+        let compiled = compile_selector_state_capability("button:focus-visible")
+            .unwrap()
+            .unwrap();
+        assert_eq!(compiled.base_selector, "button");
+        assert_eq!(
+            compiled.predicates,
+            vec![AcirInteractionPredicate::FocusVisible]
+        );
+        assert_eq!(
+            compiled.receipt.translation_id,
+            CSS_SELECTOR_INTERACTION_V1
+        );
     }
 
     #[test]
