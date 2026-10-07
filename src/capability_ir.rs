@@ -132,6 +132,17 @@ impl CapabilityEnvironment {
 }
 
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcirSupportCondition {
+    CssDeclaration {
+        property: String,
+        value: String,
+    },
+    All(Vec<AcirSupportCondition>),
+    Any(Vec<AcirSupportCondition>),
+    Not(Box<AcirSupportCondition>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirLengthBasis {
     ParentFontSize,
@@ -202,6 +213,21 @@ mod tests {
             AcirInteractionPredicate::FocusWithin,
             AcirInteractionPredicate::Active
         );
+    }
+
+    #[test]
+    fn support_conditions_preserve_boolean_structure() {
+        let condition = AcirSupportCondition::Any(vec![
+            AcirSupportCondition::CssDeclaration {
+                property: "display".into(),
+                value: "grid".into(),
+            },
+            AcirSupportCondition::Not(Box::new(AcirSupportCondition::CssDeclaration {
+                property: "mask-image".into(),
+                value: "none".into(),
+            })),
+        ]);
+        assert!(matches!(condition, AcirSupportCondition::Any(_)));
     }
 
     #[test]
