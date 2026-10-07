@@ -37,6 +37,8 @@ fn decode_entity(entity: &str) -> Option<char> {
         "quot" => Some('"'),
         "apos" => Some('\''),
         "nbsp" => Some(' '),
+        "copy" => Some('©'),
+        "hellip" => Some('…'),
         _ if entity.starts_with("#x") || entity.starts_with("#X") => {
             u32::from_str_radix(&entity[2..], 16)
                 .ok()
@@ -348,6 +350,17 @@ mod tests {
             .unwrap();
         assert_eq!(document.attribute(paragraph.id, "class"), Some("lead"));
         assert_eq!(document.attribute(paragraph.id, "data-x"), Some("1"));
+    }
+
+    #[test]
+    fn decodes_observed_common_named_entities() {
+        let document = parse_document(
+            "<html><body><p>Copyright &copy; More&hellip;</p></body></html>",
+        )
+        .unwrap();
+        assert!(document.nodes().iter().any(
+            |node| matches!(&node.kind, NodeKind::Text(text) if text == "Copyright © More…")
+        ));
     }
 
     #[test]
