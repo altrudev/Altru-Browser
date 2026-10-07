@@ -7,10 +7,11 @@ use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirMediaType, CapabilityEnvironment,
+    AcirMediaType, AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
+pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -25,12 +26,20 @@ pub struct TranslationSpec {
     pub status: TranslationStatus,
 }
 
-pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[TranslationSpec {
-    id: CSS_MEDIA_ENVIRONMENT_V1,
-    source_family: "css-media-environment",
-    target_semantics: "acir.environment-condition",
-    status: TranslationStatus::Verified,
-}];
+pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
+    TranslationSpec {
+        id: CSS_MEDIA_ENVIRONMENT_V1,
+        source_family: "css-media-environment",
+        target_semantics: "acir.environment-condition",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_DESCENDANT_V1,
+        source_family: "css-selector-descendant",
+        target_semantics: "acir.selector-chain",
+        status: TranslationStatus::Verified,
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationDecision {
@@ -61,9 +70,16 @@ pub struct CompiledCapabilitySource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledSelectorCapability {
+    pub chain: AcirSelectorChain,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityCompilerError {
     MalformedAtRule,
     UnsupportedMediaQuery(String),
+    UnsupportedSelector(String),
     UnverifiedTranslation(String),
 }
 
@@ -297,6 +313,102 @@ fn matching_brace(input: &str, open: usize) -> Result<usize, CapabilityCompilerE
     Err(CapabilityCompilerError::MalformedAtRule)
 }
 
+
+fn split_top_level_descendants(input: &str) -> Result<Vec<&str>, CapabilityCompilerError> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut in_separator = false;
+
+    for (index, ch) in input.char_indices() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => {
+                if bracket_depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                }
+                bracket_depth -= 1;
+            }
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' => {
+                if paren_depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                }
+                paren_depth -= 1;
+            }
+            '>' | '+' | '~' if bracket_depth == 0 && paren_depth == 0 => {
+                return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+            }
+            ch if ch.is_whitespace() && bracket_depth == 0 && paren_depth == 0 => {
+                if !in_separator {
+                    let part = input[start..index].trim();
+                    if !part.is_empty() {
+                        parts.push(part);
+                    }
+                    in_separator = true;
+                }
+            }
+            _ if in_separator && bracket_depth == 0 && paren_depth == 0 => {
+                start = index;
+                in_separator = false;
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || bracket_depth != 0 || paren_depth != 0 {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    if !in_separator {
+        let tail = input[start..].trim();
+        if !tail.is_empty() {
+            parts.push(tail);
+        }
+    }
+
+    Ok(parts)
+}
+
+pub fn compile_selector_capability(
+    input: &str,
+) -> Result<Option<CompiledSelectorCapability>, CapabilityCompilerError> {
+    let parts = split_top_level_descendants(input)?;
+    if parts.len() < 2 {
+        return Ok(None);
+    }
+
+    require_verified(CSS_SELECTOR_DESCENDANT_V1)?;
+
+    let relation_count = parts.len() - 1;
+    let chain = AcirSelectorChain {
+        compounds: parts.into_iter().map(str::to_string).collect(),
+        combinators: vec![AcirSelectorRelation::Descendant; relation_count],
+    };
+    if !chain.is_well_formed() {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    Ok(Some(CompiledSelectorCapability {
+        chain,
+        receipt: TranslationReceipt {
+            translation_id: CSS_SELECTOR_DESCENDANT_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
 pub fn compile_stylesheet_capabilities(
     input: &str,
     environment: CapabilityEnvironment,
@@ -389,6 +501,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hi_dpi.receipts[0].decision, TranslationDecision::Elided);
+    }
+
+    #[test]
+    fn descendant_selector_compiles_without_splitting_attribute_spaces() {
+        let compiled = compile_selector_capability(":root .card[data-mode=dark i]")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(compiled.chain.compounds, vec![":root", ".card[data-mode=dark i]"]);
+        assert_eq!(
+            compiled.chain.combinators,
+            vec![AcirSelectorRelation::Descendant]
+        );
+        assert_eq!(
+            compiled.receipt.translation_id,
+            CSS_SELECTOR_DESCENDANT_V1
+        );
+    }
+
+    #[test]
+    fn explicit_child_combinator_is_not_silently_lowered() {
+        assert!(compile_selector_capability(":root > .card").is_err());
     }
 
     #[test]

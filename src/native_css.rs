@@ -4,7 +4,8 @@
 //! closed; unknown properties follow CSS error handling and are ignored.
 
 use crate::capability_compiler::{
-    CapabilityCompilerError, TranslationReceipt, compile_stylesheet_capabilities,
+    CapabilityCompilerError, TranslationReceipt, compile_selector_capability,
+    compile_stylesheet_capabilities,
 };
 use crate::capability_ir::{AcirSelectorRelation, CapabilityEnvironment};
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
@@ -388,67 +389,34 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     Ok(selector)
 }
 
-fn split_descendant_selector(input: &str) -> Result<Option<(&str, &str)>, CssError> {
-    let mut bracket_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut quote: Option<char> = None;
-    let mut last_split: Option<(usize, usize)> = None;
-    let mut whitespace_start: Option<usize> = None;
-
-    for (index, ch) in input.char_indices() {
-        if let Some(active_quote) = quote {
-            if ch == active_quote {
-                quote = None;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' | '\'' => quote = Some(ch),
-            '[' => bracket_depth = bracket_depth.saturating_add(1),
-            ']' => {
-                if bracket_depth == 0 {
-                    return Err(CssError::UnsupportedSelector(input.into()));
-                }
-                bracket_depth -= 1;
-            }
-            '(' => paren_depth = paren_depth.saturating_add(1),
-            ')' => {
-                if paren_depth == 0 {
-                    return Err(CssError::UnsupportedSelector(input.into()));
-                }
-                paren_depth -= 1;
-            }
-            _ => {}
-        }
-
-        if bracket_depth == 0 && paren_depth == 0 && ch.is_whitespace() {
-            whitespace_start.get_or_insert(index);
-        } else if let Some(start) = whitespace_start.take() {
-            if !input[..start].trim().is_empty() && !input[index..].trim().is_empty() {
-                last_split = Some((start, index));
-            }
-        }
-    }
-
-    if quote.is_some() || bracket_depth != 0 || paren_depth != 0 {
-        return Err(CssError::UnsupportedSelector(input.into()));
-    }
-
-    Ok(last_split.map(|(start, end)| (&input[..start], &input[end..])))
-}
-
 fn parse_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty() {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
 
-    if let Some((ancestor_input, descendant_input)) = split_descendant_selector(input)? {
-        let ancestor = parse_selector(ancestor_input)?;
-        let mut descendant = parse_selector(descendant_input)?;
-        descendant.ancestor = Some((AcirSelectorRelation::Descendant, Box::new(ancestor)));
-        return Ok(descendant);
+    let compiled_selector = match compile_selector_capability(input) {
+        Ok(compiled) => compiled,
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    if let Some(compiled) = compiled_selector {
+        let mut current: Option<Selector> = None;
+        for (index, compound) in compiled.chain.compounds.iter().enumerate() {
+            let mut selector = parse_selector(compound)?;
+            if index > 0 {
+                let relation = compiled.chain.combinators[index - 1];
+                let ancestor = current
+                    .take()
+                    .ok_or_else(|| CssError::UnsupportedSelector(input.into()))?;
+                selector.ancestor = Some((relation, Box::new(ancestor)));
+            }
+            current = Some(selector);
+        }
+        return current.ok_or_else(|| CssError::UnsupportedSelector(input.into()));
     }
 
     if input == ":root" {
@@ -607,8 +575,11 @@ fn strip_css_comments(input: &str) -> Result<String, CssError> {
     Ok(output)
 }
 
-fn parse_compiled_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
+fn parse_compiled_stylesheet(
+    input: &str,
+) -> Result<(StyleSheet, Vec<TranslationReceipt>), CssError> {
     let mut rules = Vec::new();
+    let mut translations = Vec::new();
     let mut rest = input;
     let mut order = 0usize;
 
@@ -621,7 +592,16 @@ fn parse_compiled_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
         };
         let close = open + 1 + close_rel;
 
-        let selector = parse_selector(rest[..open].trim())?;
+        let selector_source = rest[..open].trim();
+        match compile_selector_capability(selector_source) {
+            Ok(Some(compiled_selector)) => translations.push(compiled_selector.receipt),
+            Ok(None) => {}
+            Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+                return Err(CssError::UnsupportedSelector(selector_source.into()));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let selector = parse_selector(selector_source)?;
         let declarations = parse_declarations(&rest[open + 1..close])?;
         rules.push(Rule {
             selector,
@@ -632,19 +612,20 @@ fn parse_compiled_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
         rest = &rest[close + 1..];
     }
 
-    Ok(StyleSheet { rules })
+    Ok((StyleSheet { rules }, translations))
 }
-
 pub fn parse_stylesheet_with_environment(
     input: &str,
     environment: CapabilityEnvironment,
 ) -> Result<CompiledStyleSheet, CssError> {
     let cleaned = strip_css_comments(input)?;
     let compiled = compile_stylesheet_capabilities(&cleaned, environment)?;
-    let stylesheet = parse_compiled_stylesheet(&compiled.source)?;
+    let (stylesheet, selector_translations) = parse_compiled_stylesheet(&compiled.source)?;
+    let mut translations = compiled.receipts;
+    translations.extend(selector_translations);
     Ok(CompiledStyleSheet {
         stylesheet,
-        translations: compiled.receipts,
+        translations,
     })
 }
 
@@ -761,11 +742,19 @@ mod tests {
                         == Some("has-very-light-gray-background-color")
             })
             .unwrap();
-        let selector =
-            parse_selector(":root .has-very-light-gray-background-color").unwrap();
+        let compiled = parse_stylesheet_with_environment(
+            ":root .has-very-light-gray-background-color { font-size: 20px; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        let selector = &compiled.stylesheet.rules[0].selector;
 
         assert!(selector.matches(&document, target.id));
         assert_eq!(selector.specificity(), (0, 2, 0));
+        assert!(compiled
+            .translations
+            .iter()
+            .any(|receipt| receipt.translation_id == "css.selector-descendant.v1"));
     }
 
     #[test]

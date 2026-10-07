@@ -113,6 +113,21 @@ impl CapabilityEnvironment {
     }
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcirSelectorChain {
+    pub compounds: Vec<String>,
+    pub combinators: Vec<AcirSelectorRelation>,
+}
+
+impl AcirSelectorChain {
+    pub fn is_well_formed(&self) -> bool {
+        !self.compounds.is_empty()
+            && self.combinators.len().saturating_add(1) == self.compounds.len()
+            && self.compounds.iter().all(|compound| !compound.trim().is_empty())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +151,15 @@ mod tests {
             ],
         };
         assert!(environment.evaluate_condition(&condition));
+    }
+
+    #[test]
+    fn selector_chain_requires_one_relation_between_compounds() {
+        let chain = AcirSelectorChain {
+            compounds: vec![":root".into(), ".card".into()],
+            combinators: vec![AcirSelectorRelation::Descendant],
+        };
+        assert!(chain.is_well_formed());
     }
 
     #[test]
