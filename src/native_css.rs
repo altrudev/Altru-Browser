@@ -35,7 +35,11 @@ impl From<CapabilityCompilerError> for CssError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttributeOperator {
     Equals,
+    IncludesWord,
+    DashPrefix,
     Prefix,
+    Suffix,
+    Contains,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,12 +167,29 @@ impl Selector {
                 let expected = attribute.value.to_ascii_lowercase();
                 match attribute.operator {
                     AttributeOperator::Equals => actual == expected,
+                    AttributeOperator::IncludesWord => {
+                        actual.split_ascii_whitespace().any(|word| word == expected)
+                    }
+                    AttributeOperator::DashPrefix => {
+                        actual == expected || actual.starts_with(&(expected + "-"))
+                    }
                     AttributeOperator::Prefix => actual.starts_with(&expected),
+                    AttributeOperator::Suffix => actual.ends_with(&expected),
+                    AttributeOperator::Contains => actual.contains(&expected),
                 }
             } else {
                 match attribute.operator {
                     AttributeOperator::Equals => actual == attribute.value,
+                    AttributeOperator::IncludesWord => actual
+                        .split_ascii_whitespace()
+                        .any(|word| word == attribute.value),
+                    AttributeOperator::DashPrefix => {
+                        actual == attribute.value
+                            || actual.starts_with(&(attribute.value.clone() + "-"))
+                    }
                     AttributeOperator::Prefix => actual.starts_with(&attribute.value),
+                    AttributeOperator::Suffix => actual.ends_with(&attribute.value),
+                    AttributeOperator::Contains => actual.contains(&attribute.value),
                 }
             };
             if !matched {
@@ -279,11 +300,18 @@ fn parse_attribute_selector(input: &str) -> Result<AttributeSelector, CssError> 
         (input, false)
     };
 
-    let (name, operator, raw_value) = if let Some((name, value)) = body.split_once("^=") {
-        (name, AttributeOperator::Prefix, value)
-    } else if let Some((name, value)) = body.split_once('=') {
-        (name, AttributeOperator::Equals, value)
-    } else {
+    let operators = [
+        ("~=", AttributeOperator::IncludesWord),
+        ("|=", AttributeOperator::DashPrefix),
+        ("^=", AttributeOperator::Prefix),
+        ("$=", AttributeOperator::Suffix),
+        ("*=", AttributeOperator::Contains),
+        ("=", AttributeOperator::Equals),
+    ];
+    let Some((name, operator, raw_value)) = operators
+        .into_iter()
+        .find_map(|(token, operator)| body.split_once(token).map(|(name, value)| (name, operator, value)))
+    else {
         return Err(CssError::UnsupportedSelector(format!("[{input}]")));
     };
 
@@ -369,10 +397,7 @@ fn split_selector_list(input: &str) -> Result<Vec<&str>, CssError> {
 fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty()
-        || input.contains('>')
-        || input.contains('+')
-        || input.contains('~')
-        || input.contains('*')
+        || input.trim_start().starts_with('*')
         || input.contains(':')
         || input
             .chars()
@@ -857,6 +882,52 @@ mod tests {
         let selector = parse_selector("[sizes^=\"auto,\" i]").unwrap();
         assert_eq!(selector.attributes.len(), 1);
         assert_eq!(selector.attributes[0].value, "auto,");
+    }
+
+    #[test]
+    fn parses_full_attribute_operator_family() {
+        let document = parse_document(
+            "<html><body><div data-words=\"alpha beta\" lang=\"en-US\" data-prefix=\"start-middle-end\" style=\"border-top-color:red\"></div></body></html>",
+        )
+        .unwrap();
+        let node = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "div"))
+            .unwrap();
+
+        for selector in [
+            "[data-words~=beta]",
+            "[lang|=en]",
+            "[data-prefix^=start]",
+            "[data-prefix$=end]",
+            "[data-prefix*=middle]",
+            "[style*=border-top-color]",
+        ] {
+            assert!(parse_selector(selector).unwrap().matches(&document, node.id), "{selector}");
+        }
+    }
+
+    #[test]
+    fn attribute_operator_case_flag_applies_to_all_operator_forms() {
+        let document =
+            parse_document("<html><body><div data-x=\"Alpha Beta-Gamma\" lang=\"EN-us\"></div></body></html>")
+                .unwrap();
+        let node = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "div"))
+            .unwrap();
+
+        for selector in [
+            "[data-x~=alpha i]",
+            "[lang|=en i]",
+            "[data-x^=alpha i]",
+            "[data-x$=gamma i]",
+            "[data-x*=beta i]",
+        ] {
+            assert!(parse_selector(selector).unwrap().matches(&document, node.id), "{selector}");
+        }
     }
 
     #[test]
