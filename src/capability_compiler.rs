@@ -778,9 +778,6 @@ pub fn compile_selector_state_capability(
     if predicates.is_empty() {
         return Ok(None);
     }
-    if base.is_empty() {
-        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
-    }
 
     require_verified(CSS_SELECTOR_INTERACTION_V1)?;
     predicates.reverse();
@@ -1455,6 +1452,15 @@ mod tests {
 
         assert!(compile_font_size_capability("1rem").unwrap().is_none());
         assert!(compile_font_size_capability("16px").unwrap().is_none());
+    }
+
+    #[test]
+    fn bare_interaction_state_compiles_without_fabricating_universal_syntax() {
+        let compiled = compile_selector_state_capability(":active")
+            .unwrap()
+            .unwrap();
+        assert!(compiled.base_selector.is_empty());
+        assert_eq!(compiled.predicates, vec![AcirInteractionPredicate::Active]);
     }
 
     #[test]
