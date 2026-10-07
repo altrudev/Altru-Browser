@@ -1,6 +1,9 @@
 use std::io::Read;
 use std::time::Duration;
 
+use adaptive_web_engine_fabric::companion_observation::{
+    BrowserCapabilityObservation, append_local_observation,
+};
 use adaptive_web_engine_fabric::native_runtime::{NativePage, NativeRuntime, NativeRuntimeError};
 use adaptive_web_engine_fabric::native_scene::SceneCommand;
 use adaptive_web_engine_fabric::resource_api::{
@@ -181,13 +184,20 @@ impl AltruBrowserApp {
     fn navigate(&mut self, target: String) {
         let normalized = normalize_target(&target);
         self.url_input = normalized.clone();
-        match self.runtime.load(normalized) {
+        match self.runtime.load(normalized.clone()) {
             Ok(page) => {
+                let _ = append_local_observation(&BrowserCapabilityObservation::success(
+                    normalized.clone(),
+                ));
                 self.page = Some(page);
                 self.last_error = None;
                 self.mode = ChromeMode::Focus;
             }
             Err(error) => {
+                let _ = append_local_observation(&BrowserCapabilityObservation::failure(
+                    normalized.clone(),
+                    &error,
+                ));
                 self.page = None;
                 self.last_error = Some(format_runtime_error(&error));
                 self.mode = ChromeMode::Inspect;
