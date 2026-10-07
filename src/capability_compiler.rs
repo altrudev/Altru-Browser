@@ -8,13 +8,14 @@ use sha2::{Digest, Sha256};
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
     AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirRelativeLength,
-    AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
+    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
 pub const CSS_SELECTOR_DESCENDANT_V1: &str = "css.selector-descendant.v1";
 pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
 pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1";
+pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_INTERACTION_V1,
         source_family: "css-selector-interaction-state",
         target_semantics: "acir.interaction-predicate",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_BOOLEAN_V1,
+        source_family: "css-selector-boolean",
+        target_semantics: "acir.selector-boolean",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -101,6 +108,14 @@ pub struct CompiledSelectorCapability {
 pub struct CompiledSelectorStateCapability {
     pub base_selector: String,
     pub predicates: Vec<AcirInteractionPredicate>,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledSelectorBooleanCapability {
+    pub base_selector: String,
+    pub alternatives: Vec<String>,
+    pub operation: AcirSelectorBoolean,
     pub receipt: TranslationReceipt,
 }
 
@@ -516,6 +531,119 @@ fn parse_selector_chain(
     Ok(Some(chain))
 }
 
+fn split_selector_arguments(
+    input: &str,
+) -> Result<Vec<String>, CapabilityCompilerError> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote: Option<char> = None;
+
+    for ch in input.chars() {
+        if let Some(active_quote) = quote {
+            current.push(ch);
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '[' => {
+                bracket_depth = bracket_depth.saturating_add(1);
+                current.push(ch);
+            }
+            ']' => {
+                if bracket_depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                }
+                bracket_depth -= 1;
+                current.push(ch);
+            }
+            '(' => {
+                paren_depth = paren_depth.saturating_add(1);
+                current.push(ch);
+            }
+            ')' => {
+                if paren_depth == 0 {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                }
+                paren_depth -= 1;
+                current.push(ch);
+            }
+            ',' if bracket_depth == 0 && paren_depth == 0 => {
+                let value = current.trim();
+                if value.is_empty() {
+                    return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                }
+                parts.push(value.to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if quote.is_some() || bracket_depth != 0 || paren_depth != 0 {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    let tail = current.trim();
+    if tail.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+    parts.push(tail.to_string());
+    Ok(parts)
+}
+
+pub fn compile_selector_boolean_capability(
+    input: &str,
+) -> Result<Option<CompiledSelectorBooleanCapability>, CapabilityCompilerError> {
+    let input = input.trim();
+    let candidates = [
+        (":where(", AcirSelectorBoolean::AnyZeroSpecificity),
+        (":not(", AcirSelectorBoolean::None),
+        (":is(", AcirSelectorBoolean::Any),
+    ];
+
+    let Some((start, marker, operation)) = candidates
+        .into_iter()
+        .filter_map(|(marker, operation)| input.find(marker).map(|start| (start, marker, operation)))
+        .min_by_key(|(start, _, _)| *start)
+    else {
+        return Ok(None);
+    };
+
+    if !input.ends_with(')') {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    let inner_start = start + marker.len();
+    let inner = &input[inner_start..input.len() - 1];
+    if inner.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+
+    require_verified(CSS_SELECTOR_BOOLEAN_V1)?;
+    let alternatives = split_selector_arguments(inner)?;
+    let base_selector = input[..start].trim().to_string();
+
+    Ok(Some(CompiledSelectorBooleanCapability {
+        base_selector,
+        alternatives,
+        operation,
+        receipt: TranslationReceipt {
+            translation_id: CSS_SELECTOR_BOOLEAN_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
 pub fn compile_selector_state_capability(
     input: &str,
 ) -> Result<Option<CompiledSelectorStateCapability>, CapabilityCompilerError> {
@@ -699,6 +827,35 @@ mod tests {
         assert_eq!(
             compiled.receipt.translation_id,
             CSS_SELECTOR_DESCENDANT_V1
+        );
+    }
+
+    #[test]
+    fn boolean_selector_family_compiles_is_where_and_not() {
+        let where_selector = compile_selector_boolean_capability(":where(.has-border-color)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(where_selector.base_selector, "");
+        assert_eq!(where_selector.alternatives, vec![".has-border-color"]);
+        assert_eq!(
+            where_selector.operation,
+            AcirSelectorBoolean::AnyZeroSpecificity
+        );
+
+        let not_selector = compile_selector_boolean_capability("p:not(.lead,.summary)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(not_selector.base_selector, "p");
+        assert_eq!(not_selector.alternatives, vec![".lead", ".summary"]);
+        assert_eq!(not_selector.operation, AcirSelectorBoolean::None);
+
+        let is_selector = compile_selector_boolean_capability("p:is(.lead,.summary)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(is_selector.operation, AcirSelectorBoolean::Any);
+        assert_eq!(
+            is_selector.receipt.translation_id,
+            CSS_SELECTOR_BOOLEAN_V1
         );
     }
 
