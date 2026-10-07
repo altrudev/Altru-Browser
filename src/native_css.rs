@@ -8,11 +8,12 @@ use crate::capability_compiler::{
     compile_font_size_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
-    compile_stylesheet_capabilities, compile_zero_length_capability,
+    compile_selector_structural_capability, compile_stylesheet_capabilities,
+    compile_zero_length_capability,
 };
 use crate::capability_ir::{
     AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean, AcirSelectorRelation,
-    CapabilityEnvironment,
+    AcirStructuralPredicate, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
@@ -60,6 +61,7 @@ pub struct Selector {
     pub attributes: Vec<AttributeSelector>,
     pub root: bool,
     pub states: Vec<AcirInteractionPredicate>,
+    pub structural: Vec<AcirStructuralPredicate>,
     pub any_of: Vec<Selector>,
     pub where_any_of: Vec<Selector>,
     pub none_of: Vec<Selector>,
@@ -73,6 +75,7 @@ impl Selector {
             (self.classes.len()
                 + self.attributes.len()
                 + self.states.len()
+                + self.structural.len()
                 + usize::from(self.root))
                 .min(u16::MAX as usize) as u16,
             u16::from(self.tag.is_some()),
@@ -230,6 +233,22 @@ impl Selector {
             .iter()
             .any(|predicate| !interaction.matches(document, node, *predicate))
         {
+            return false;
+        }
+
+        if self.structural.iter().any(|predicate| {
+            let Some(parent) = document.element_parent(node) else {
+                return true;
+            };
+            let siblings = document.element_children(parent);
+            match predicate {
+                AcirStructuralPredicate::FirstChild => siblings.first().copied() != Some(node),
+                AcirStructuralPredicate::LastChild => siblings.last().copied() != Some(node),
+                AcirStructuralPredicate::OnlyChild => {
+                    siblings.len() != 1 || siblings.first().copied() != Some(node)
+                }
+            }
+        }) {
             return false;
         }
 
@@ -423,6 +442,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         attributes: Vec::new(),
         root: false,
         states: Vec::new(),
+        structural: Vec::new(),
         any_of: Vec::new(),
         where_any_of: Vec::new(),
         none_of: Vec::new(),
@@ -532,6 +552,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 attributes: Vec::new(),
                 root: false,
                 states: Vec::new(),
+                structural: Vec::new(),
                 any_of: Vec::new(),
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
@@ -569,6 +590,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 attributes: Vec::new(),
                 root: false,
                 states: Vec::new(),
+                structural: Vec::new(),
                 any_of: Vec::new(),
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
@@ -581,6 +603,35 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         return Ok(selector);
     }
 
+    let compiled_structural = match compile_selector_structural_capability(input) {
+        Ok(compiled) => compiled,
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(compiled) = compiled_structural {
+        let mut selector = if compiled.base_selector.is_empty() {
+            Selector {
+                tag: None,
+                id: None,
+                classes: Vec::new(),
+                attributes: Vec::new(),
+                root: false,
+                states: Vec::new(),
+                structural: Vec::new(),
+                any_of: Vec::new(),
+                where_any_of: Vec::new(),
+                none_of: Vec::new(),
+                ancestor: None,
+            }
+        } else {
+            parse_selector(&compiled.base_selector)?
+        };
+        selector.structural.extend(compiled.predicates);
+        return Ok(selector);
+    }
+
     if input == ":root" {
         return Ok(Selector {
             tag: None,
@@ -589,6 +640,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             attributes: Vec::new(),
             root: true,
             states: Vec::new(),
+            structural: Vec::new(),
             any_of: Vec::new(),
             where_any_of: Vec::new(),
             none_of: Vec::new(),
@@ -791,6 +843,9 @@ fn collect_selector_translation_receipts(
                 if let Some(state) = compile_selector_state_capability(compound)? {
                     translations.push(state.receipt);
                 }
+                if let Some(structural) = compile_selector_structural_capability(compound)? {
+                    translations.push(structural.receipt);
+                }
             }
             translations.push(compiled_selector.receipt);
         }
@@ -800,6 +855,9 @@ fn collect_selector_translation_receipts(
             }
             if let Some(state) = compile_selector_state_capability(selector_source)? {
                 translations.push(state.receipt);
+            }
+            if let Some(structural) = compile_selector_structural_capability(selector_source)? {
+                translations.push(structural.receipt);
             }
         }
         Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
@@ -955,6 +1013,28 @@ mod tests {
         let selector = parse_selector("[sizes^=\"auto,\" i]").unwrap();
         assert_eq!(selector.attributes.len(), 1);
         assert_eq!(selector.attributes[0].value, "auto,");
+    }
+
+    #[test]
+    fn structural_child_selectors_use_owned_dom_relations() {
+        let document = parse_document(
+            "<html><body><div><span class=\"first\">A</span><span class=\"last\">B</span></div><div><span class=\"only\">C</span></div></body></html>",
+        )
+        .unwrap();
+
+        let find = |class: &str| {
+            document
+                .nodes()
+                .iter()
+                .find(|node| document.attribute(node.id, "class") == Some(class))
+                .unwrap()
+                .id
+        };
+
+        assert!(parse_selector(".first:first-child").unwrap().matches(&document, find("first")));
+        assert!(parse_selector(".last:last-child").unwrap().matches(&document, find("last")));
+        assert!(parse_selector(".only:only-child").unwrap().matches(&document, find("only")));
+        assert!(!parse_selector(".first:last-child").unwrap().matches(&document, find("first")));
     }
 
     #[test]
