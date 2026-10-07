@@ -647,7 +647,11 @@ fn parse_declarations_with_translations(
             match property.as_str() {
                 "display" => match value {
                     "none" | "block" | "inline" | "inline-block" | "flex" | "inline-flex"
-                    | "grid" | "inline-grid" => Some(CssValue::Display(value.into())),
+                    | "grid" | "inline-grid" | "table" | "inline-table" | "table-row"
+                    | "table-cell" | "table-row-group" | "table-header-group"
+                    | "table-footer-group" | "table-caption" => {
+                        Some(CssValue::Display(value.into()))
+                    },
                     _ => {
                         return Err(CssError::InvalidValue {
                             property,
@@ -1290,6 +1294,26 @@ mod tests {
             parse_declarations("font-size: revert;"),
             Err(CssError::InvalidValue { property, .. }) if property == "font-size"
         ));
+    }
+
+    #[test]
+    fn parses_table_display_family() {
+        for value in [
+            "table",
+            "inline-table",
+            "table-row",
+            "table-cell",
+            "table-row-group",
+            "table-header-group",
+            "table-footer-group",
+            "table-caption",
+        ] {
+            let declarations = parse_declarations(&format!("display: {value};")).unwrap();
+            assert!(matches!(
+                &declarations[0].value,
+                CssValue::Display(parsed) if parsed == value
+            ));
+        }
     }
 
     #[test]

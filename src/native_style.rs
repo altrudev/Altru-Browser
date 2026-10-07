@@ -21,6 +21,14 @@ pub enum Display {
     InlineFlex,
     Grid,
     InlineGrid,
+    Table,
+    InlineTable,
+    TableRow,
+    TableCell,
+    TableRowGroup,
+    TableHeaderGroup,
+    TableFooterGroup,
+    TableCaption,
 }
 
 impl Display {
@@ -39,7 +47,7 @@ impl Display {
     pub const fn is_outer_inline(self) -> bool {
         matches!(
             self,
-            Self::Inline | Self::InlineBlock | Self::InlineFlex | Self::InlineGrid
+            Self::Inline | Self::InlineBlock | Self::InlineFlex | Self::InlineGrid | Self::InlineTable
         )
     }
 }
@@ -263,6 +271,14 @@ fn apply_value(
                 "inline-flex" => Display::InlineFlex,
                 "grid" => Display::Grid,
                 "inline-grid" => Display::InlineGrid,
+                "table" => Display::Table,
+                "inline-table" => Display::InlineTable,
+                "table-row" => Display::TableRow,
+                "table-cell" => Display::TableCell,
+                "table-row-group" => Display::TableRowGroup,
+                "table-header-group" => Display::TableHeaderGroup,
+                "table-footer-group" => Display::TableFooterGroup,
+                "table-caption" => Display::TableCaption,
                 _ => style.display,
             };
         }
@@ -430,6 +446,30 @@ mod tests {
             tag: "script".into(),
         });
         assert_eq!(style.display, Display::None);
+    }
+
+    #[test]
+    fn table_display_keywords_preserve_explicit_roles() {
+        let document = parse_document(
+            "<html><body><div class=\"t\"><div class=\"r\"><span class=\"c\">X</span></div></div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".t { display: table; } .r { display: table-row; } .c { display: table-cell; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let lookup = |class: &str| {
+            document
+                .nodes()
+                .iter()
+                .find(|node| document.attribute(node.id, "class") == Some(class))
+                .unwrap()
+                .id
+        };
+        assert_eq!(styles[lookup("t")].computed.display, Display::Table);
+        assert_eq!(styles[lookup("r")].computed.display, Display::TableRow);
+        assert_eq!(styles[lookup("c")].computed.display, Display::TableCell);
     }
 
     #[test]
