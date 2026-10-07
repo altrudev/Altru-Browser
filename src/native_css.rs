@@ -3,6 +3,8 @@
 //! This is deliberately a bounded CSS subset. Unsupported selectors fail
 //! closed; unknown properties follow CSS error handling and are ignored.
 
+use crate::acir::EnvironmentSnapshot;
+use crate::capability_compiler::{CapabilityCompileError, lower_css_media_blocks};
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +15,7 @@ pub enum CssError {
     InvalidValue { property: String, value: String },
     UnresolvedCustomProperty(String),
     UnsupportedLayout(String),
+    UnsupportedAtRule(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,10 +497,19 @@ fn strip_css_comments(input: &str) -> Result<String, CssError> {
     Ok(output)
 }
 
-pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
+fn map_capability_compile_error(error: CapabilityCompileError) -> CssError {
+    CssError::UnsupportedAtRule(format!("{error:?}"))
+}
+
+pub fn parse_stylesheet_with_environment(
+    input: &str,
+    environment: EnvironmentSnapshot,
+) -> Result<StyleSheet, CssError> {
     let cleaned = strip_css_comments(input)?;
+    let lowered =
+        lower_css_media_blocks(&cleaned, environment).map_err(map_capability_compile_error)?;
     let mut rules = Vec::new();
-    let mut rest = cleaned.as_str();
+    let mut rest = lowered.as_str();
     let mut order = 0usize;
 
     while !rest.trim().is_empty() {
@@ -523,7 +535,14 @@ pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
     Ok(StyleSheet { rules })
 }
 
-pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet, CssError> {
+pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
+    parse_stylesheet_with_environment(input, EnvironmentSnapshot::desktop_preview())
+}
+
+pub fn stylesheet_from_document_with_environment(
+    document: &NativeDocument,
+    environment: EnvironmentSnapshot,
+) -> Result<StyleSheet, CssError> {
     let mut combined = String::new();
     for node in document.nodes() {
         if matches!(&node.kind, NodeKind::Element { tag } if tag == "style") {
@@ -539,7 +558,11 @@ pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet,
             }
         }
     }
-    parse_stylesheet(&combined)
+    parse_stylesheet_with_environment(&combined, environment)
+}
+
+pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet, CssError> {
+    stylesheet_from_document_with_environment(document, EnvironmentSnapshot::desktop_preview())
 }
 
 #[cfg(test)]
@@ -621,6 +644,34 @@ mod tests {
         assert!(matches!(
             parse_stylesheet("main p { font-size: 20px; }"),
             Err(CssError::UnsupportedSelector(_))
+        ));
+    }
+
+    #[test]
+    fn media_query_is_lowered_through_acir_environment() {
+        let low_dpi = EnvironmentSnapshot {
+            viewport_width_px: 800,
+            resolution_dpi: 96,
+        };
+        let high_dpi = EnvironmentSnapshot {
+            viewport_width_px: 800,
+            resolution_dpi: 192,
+        };
+        let css = "@media (min-resolution:192dpi) { .retina { font-size: 24px; } }";
+
+        let low = parse_stylesheet_with_environment(css, low_dpi).unwrap();
+        let high = parse_stylesheet_with_environment(css, high_dpi).unwrap();
+
+        assert!(low.rules.is_empty());
+        assert_eq!(high.rules.len(), 1);
+        assert_eq!(high.rules[0].selector.classes, vec!["retina"]);
+    }
+
+    #[test]
+    fn unsupported_media_query_fails_closed() {
+        assert!(matches!(
+            parse_stylesheet("@media (orientation:landscape) { p { font-size: 20px; } }"),
+            Err(CssError::UnsupportedAtRule(_))
         ));
     }
 

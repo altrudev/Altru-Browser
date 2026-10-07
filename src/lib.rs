@@ -1,4 +1,6 @@
+pub mod acir;
 pub mod browser_kernel;
+pub mod capability_compiler;
 pub mod classifier;
 pub mod companion_observation;
 pub mod engine;
