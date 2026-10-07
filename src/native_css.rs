@@ -133,7 +133,10 @@ impl Selector {
         }
 
         if !self.any_of.is_empty()
-            && !self.any_of.iter().any(|selector| selector.matches(document, node))
+            && !self
+                .any_of
+                .iter()
+                .any(|selector| selector.matches(document, node))
         {
             return false;
         }
@@ -279,7 +282,9 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         || input.contains('~')
         || input.contains('*')
         || input.contains(':')
-        || input.chars().any(|ch| ch.is_whitespace() && !input.contains('['))
+        || input
+            .chars()
+            .any(|ch| ch.is_whitespace() && !input.contains('['))
     {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
@@ -553,10 +558,7 @@ pub fn parse_stylesheet_with_environment(
 }
 
 pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, CssError> {
-    Ok(
-        parse_stylesheet_with_environment(input, CapabilityEnvironment::default())?
-            .stylesheet,
-    )
+    Ok(parse_stylesheet_with_environment(input, CapabilityEnvironment::default())?.stylesheet)
 }
 
 fn document_style_source(document: &NativeDocument) -> String {
@@ -619,17 +621,14 @@ mod tests {
 
     #[test]
     fn parses_is_with_case_insensitive_attribute_selectors() {
-        let document = parse_document(
-            "<html><body><img sizes=\"AUTO, 100vw\"></body></html>",
-        )
-        .unwrap();
+        let document =
+            parse_document("<html><body><img sizes=\"AUTO, 100vw\"></body></html>").unwrap();
         let image = document
             .nodes()
             .iter()
             .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "img"))
             .unwrap();
-        let selector =
-            parse_selector("img:is([sizes=auto i],[sizes^=\"auto,\" i])").unwrap();
+        let selector = parse_selector("img:is([sizes=auto i],[sizes^=\"auto,\" i])").unwrap();
 
         assert!(selector.matches(&document, image.id));
         assert_eq!(selector.specificity(), (0, 1, 1));
@@ -637,10 +636,8 @@ mod tests {
 
     #[test]
     fn root_selector_matches_only_document_element() {
-        let document = parse_document(
-            "<html><body><div id=\"child\"></div></body></html>",
-        )
-        .unwrap();
+        let document =
+            parse_document("<html><body><div id=\"child\"></div></body></html>").unwrap();
         let html = document
             .nodes()
             .iter()
@@ -676,10 +673,8 @@ mod tests {
 
     #[test]
     fn strips_css_comments_before_selector_parsing() {
-        let sheet = parse_stylesheet(
-            "/*# sourceURL=inline-css */ p.lead { font-size: 20px; }",
-        )
-        .unwrap();
+        let sheet =
+            parse_stylesheet("/*# sourceURL=inline-css */ p.lead { font-size: 20px; }").unwrap();
         assert_eq!(sheet.rules.len(), 1);
         assert_eq!(sheet.rules[0].selector.tag.as_deref(), Some("p"));
     }
@@ -738,15 +733,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(compiled.stylesheet.rules.len(), 1);
-        assert_eq!(compiled.stylesheet.rules[0].selector.tag.as_deref(), Some("h1"));
+        assert_eq!(
+            compiled.stylesheet.rules[0].selector.tag.as_deref(),
+            Some("h1")
+        );
         assert_eq!(compiled.translations.len(), 1);
     }
 
     #[test]
     fn unsupported_media_query_remains_fail_closed() {
-        let result = parse_stylesheet(
-            "@media (prefers-color-scheme:dark) { p { font-size: 20px; } }",
-        );
+        let result =
+            parse_stylesheet("@media (prefers-color-scheme:dark) { p { font-size: 20px; } }");
         assert!(matches!(result, Err(CssError::CapabilityCompiler(_))));
     }
 
