@@ -6,6 +6,7 @@ pub mod companion_observation;
 pub mod engine;
 pub mod engine_api;
 pub mod governor;
+pub mod html_canonical_data;
 pub mod light;
 pub mod metrics;
 pub mod model;

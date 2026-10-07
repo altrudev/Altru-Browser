@@ -267,9 +267,20 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_selector_relation_fails_closed() {
+    fn selector_relation_executes_end_to_end() {
         let result = execute_native_document(
             "<html><head><style>main > p { font-size: 20px; }</style></head><body><main><p>X</p></main></body></html>",
+        )
+        .unwrap();
+        let debug = format!("{:?}", result.scene.commands);
+        assert!(debug.contains("20.0"));
+        assert!(debug.contains("X"));
+    }
+
+    #[test]
+    fn malformed_selector_relation_fails_closed() {
+        let result = execute_native_document(
+            "<html><head><style>main > > p { font-size: 20px; }</style></head><body><main><p>X</p></main></body></html>",
         );
         assert!(matches!(
             result,

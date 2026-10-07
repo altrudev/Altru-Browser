@@ -3,6 +3,9 @@
 //! N1 supports a deliberately bounded but real structural subset. Syntax we do
 //! not yet model is rejected rather than approximated.
 
+use crate::html_canonical_data::{
+    decode_named_reference, is_raw_text_element, is_void_element,
+};
 use crate::native_dom::{Attribute, NativeDocument, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,31 +25,21 @@ struct ParsedTag {
     attributes: Vec<Attribute>,
 }
 
-const VOID_ELEMENTS: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
-    "track", "wbr",
-];
-
-const RAW_TEXT_ELEMENTS: &[&str] = &["script", "style"];
-
-fn decode_entity(entity: &str) -> Option<char> {
-    match entity {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some(' '),
-        "copy" => Some('©'),
-        "hellip" => Some('…'),
-        _ if entity.starts_with("#x") || entity.starts_with("#X") => {
-            u32::from_str_radix(&entity[2..], 16)
-                .ok()
-                .and_then(char::from_u32)
-        }
-        _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
-        _ => None,
+fn decode_entity(entity: &str) -> Option<String> {
+    if entity.starts_with("#x") || entity.starts_with("#X") {
+        return u32::from_str_radix(&entity[2..], 16)
+            .ok()
+            .and_then(char::from_u32)
+            .map(|value| value.to_string());
     }
+    if entity.starts_with('#') {
+        return entity[1..]
+            .parse::<u32>()
+            .ok()
+            .and_then(char::from_u32)
+            .map(|value| value.to_string());
+    }
+    decode_named_reference(entity).map(str::to_string)
 }
 
 fn decode_entities(input: &str) -> Result<String, HtmlParseError> {
@@ -81,7 +74,7 @@ fn decode_entities(input: &str) -> Result<String, HtmlParseError> {
             return Err(HtmlParseError::UnsupportedEntity(entity.into()));
         };
 
-        output.push(decoded);
+        output.push_str(&decoded);
         cursor = amp + semi_rel + 2;
     }
 
@@ -268,8 +261,8 @@ pub fn parse_document(input: &str) -> Result<NativeDocument, HtmlParseError> {
         } else {
             let parent = *stack.last().unwrap();
             let tag_name = parsed.name.clone();
-            let is_void = VOID_ELEMENTS.contains(&tag_name.as_str());
-            let is_raw_text = RAW_TEXT_ELEMENTS.contains(&tag_name.as_str());
+            let is_void = is_void_element(&tag_name);
+            let is_raw_text = is_raw_text_element(&tag_name);
             let id = document
                 .append_element_with_attributes(parent, parsed.name, parsed.attributes)
                 .ok_or(HtmlParseError::MalformedMarkup)?;
@@ -360,6 +353,17 @@ mod tests {
         .unwrap();
         assert!(document.nodes().iter().any(
             |node| matches!(&node.kind, NodeKind::Text(text) if text == "Copyright © More…")
+        ));
+    }
+
+    #[test]
+    fn decodes_full_named_reference_table_and_multicodepoint_values() {
+        let document = parse_document(
+            "<html><body><p>&NotEqualTilde; &AElig; &frac12;</p></body></html>",
+        )
+        .unwrap();
+        assert!(document.nodes().iter().any(
+            |node| matches!(&node.kind, NodeKind::Text(text) if text == "≂̸ Æ ½")
         ));
     }
 
