@@ -4,13 +4,14 @@
 //! closed; unknown properties follow CSS error handling and are ignored.
 
 use crate::capability_compiler::{
-    CapabilityCompilerError, TranslationReceipt, compile_font_size_capability,
+    CapabilityCompilerError, TranslationReceipt, compile_attribute_selector_capability,
+    compile_attribute_selector_receipts, compile_font_size_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_state_capability, compile_stylesheet_capabilities,
 };
 use crate::capability_ir::{
-    AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean, AcirSelectorRelation,
-    CapabilityEnvironment,
+    AcirAttributeOperator, AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean,
+    AcirSelectorRelation, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
@@ -33,15 +34,9 @@ impl From<CapabilityCompilerError> for CssError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AttributeOperator {
-    Equals,
-    Prefix,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeSelector {
     pub name: String,
-    pub operator: AttributeOperator,
+    pub operator: AcirAttributeOperator,
     pub value: String,
     pub case_insensitive: bool,
 }
@@ -162,13 +157,35 @@ impl Selector {
                 let actual = actual.to_ascii_lowercase();
                 let expected = attribute.value.to_ascii_lowercase();
                 match attribute.operator {
-                    AttributeOperator::Equals => actual == expected,
-                    AttributeOperator::Prefix => actual.starts_with(&expected),
+                    AcirAttributeOperator::Equals => actual == expected,
+                    AcirAttributeOperator::IncludesWord => {
+                        actual.split_ascii_whitespace().any(|word| word == expected)
+                    }
+                    AcirAttributeOperator::DashMatch => {
+                        actual == expected
+                            || actual
+                                .strip_prefix(&expected)
+                                .is_some_and(|rest| rest.starts_with('-'))
+                    }
+                    AcirAttributeOperator::Prefix => actual.starts_with(&expected),
+                    AcirAttributeOperator::Suffix => actual.ends_with(&expected),
+                    AcirAttributeOperator::Substring => actual.contains(&expected),
                 }
             } else {
                 match attribute.operator {
-                    AttributeOperator::Equals => actual == attribute.value,
-                    AttributeOperator::Prefix => actual.starts_with(&attribute.value),
+                    AcirAttributeOperator::Equals => actual == attribute.value,
+                    AcirAttributeOperator::IncludesWord => actual
+                        .split_ascii_whitespace()
+                        .any(|word| word == attribute.value),
+                    AcirAttributeOperator::DashMatch => {
+                        actual == attribute.value
+                            || actual
+                                .strip_prefix(&attribute.value)
+                                .is_some_and(|rest| rest.starts_with('-'))
+                    }
+                    AcirAttributeOperator::Prefix => actual.starts_with(&attribute.value),
+                    AcirAttributeOperator::Suffix => actual.ends_with(&attribute.value),
+                    AcirAttributeOperator::Substring => actual.contains(&attribute.value),
                 }
             };
             if !matched {
@@ -272,53 +289,16 @@ pub struct CompiledStyleSheet {
 }
 
 fn parse_attribute_selector(input: &str) -> Result<AttributeSelector, CssError> {
-    let input = input.trim();
-    let (body, case_insensitive) = if let Some(body) = input.strip_suffix(" i") {
-        (body.trim_end(), true)
-    } else {
-        (input, false)
-    };
-
-    let (name, operator, raw_value) = if let Some((name, value)) = body.split_once("^=") {
-        (name, AttributeOperator::Prefix, value)
-    } else if let Some((name, value)) = body.split_once('=') {
-        (name, AttributeOperator::Equals, value)
-    } else {
+    let Some(compiled) = compile_attribute_selector_capability(input)? else {
         return Err(CssError::UnsupportedSelector(format!("[{input}]")));
     };
-
-    let name = name.trim().to_ascii_lowercase();
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':'))
-    {
-        return Err(CssError::UnsupportedSelector(format!("[{input}]")));
-    }
-
-    let raw_value = raw_value.trim();
-    let value = if (raw_value.starts_with('"') && raw_value.ends_with('"'))
-        || (raw_value.starts_with('\'') && raw_value.ends_with('\''))
-    {
-        if raw_value.len() < 2 {
-            return Err(CssError::UnsupportedSelector(format!("[{input}]")));
-        }
-        raw_value[1..raw_value.len() - 1].to_string()
-    } else {
-        raw_value.to_string()
-    };
-    if value.is_empty() {
-        return Err(CssError::UnsupportedSelector(format!("[{input}]")));
-    }
-
     Ok(AttributeSelector {
-        name,
-        operator,
-        value,
-        case_insensitive,
+        name: compiled.name,
+        operator: compiled.operator,
+        value: compiled.value,
+        case_insensitive: compiled.case_insensitive,
     })
 }
-
 fn split_selector_list(input: &str) -> Result<Vec<&str>, CssError> {
     let mut parts = Vec::new();
     let mut start = 0usize;
@@ -372,7 +352,6 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         || input.contains('>')
         || input.contains('+')
         || input.contains('~')
-        || input.contains('*')
         || input.contains(':')
         || input
             .chars()
@@ -720,6 +699,7 @@ fn parse_compiled_stylesheet(
         let close = open + 1 + close_rel;
 
         let selector_source = rest[..open].trim();
+        translations.extend(compile_attribute_selector_receipts(selector_source)?);
         match compile_selector_capability(selector_source) {
             Ok(Some(compiled_selector)) => {
                 for compound in &compiled_selector.chain.compounds {
@@ -838,12 +818,32 @@ mod tests {
     }
 
     #[test]
-    fn attribute_prefix_selector_preserves_quoted_comma_with_case_flag() {
-        let selector = parse_attribute_selector("sizes^=\"auto,\" i").unwrap();
-        assert_eq!(selector.name, "sizes");
-        assert_eq!(selector.operator, AttributeOperator::Prefix);
-        assert_eq!(selector.value, "auto,");
-        assert!(selector.case_insensitive);
+    fn attribute_operator_family_matches_expected_semantics() {
+        let document = parse_document(
+            "<html><body><a class=\"lead external\" lang=\"en-US\" href=\"https://example.com/file.pdf\" style=\"color:red;border-top-color:#fff\" type=\"TEXT\">X</a></body></html>",
+        )
+        .unwrap();
+        let node = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "a"))
+            .unwrap();
+
+        for selector in [
+            "[class~=external]",
+            "[lang|=en]",
+            "[href^=https]",
+            "[href$=.pdf]",
+            "[style*=border-top-color]",
+            "[type=text i]",
+        ] {
+            assert!(parse_selector(selector).unwrap().matches(&document, node.id), "{selector}");
+        }
+
+        let parsed = parse_attribute_selector("sizes^=\"auto,\" i").unwrap();
+        assert_eq!(parsed.operator, AcirAttributeOperator::Prefix);
+        assert_eq!(parsed.value, "auto,");
+        assert!(parsed.case_insensitive);
     }
 
     #[test]
@@ -994,6 +994,19 @@ mod tests {
             parse_selector("main > > p"),
             Err(CssError::UnsupportedSelector(_))
         ));
+    }
+
+    #[test]
+    fn attribute_operator_family_is_receipted_in_stylesheet_evidence() {
+        let compiled = parse_stylesheet_with_environment(
+            "[style*=border-top-color] { font-size: 20px; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(compiled
+            .translations
+            .iter()
+            .any(|receipt| receipt.translation_id == "css.selector-attribute.v1"));
     }
 
     #[test]
