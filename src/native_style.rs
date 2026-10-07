@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 
 use crate::interaction_state::InteractionSnapshot;
-use crate::native_css::{CssError, CssValue, Declaration, StyleSheet, parse_declarations};
+use crate::native_css::{
+    CssError, CssGlobalKeyword, CssValue, Declaration, StyleSheet, parse_declarations,
+};
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +196,62 @@ fn resolve_value(
     }
 }
 
-fn apply_value(style: &mut ComputedStyle, property: &str, value: &CssValue) {
+fn property_inherits_by_default(property: &str) -> bool {
+    matches!(property, "font-size")
+}
+
+fn assign_property_from(
+    target: &mut ComputedStyle,
+    source: &ComputedStyle,
+    property: &str,
+) {
+    match property {
+        "display" => target.display = source.display,
+        "flex-direction" => target.flex_direction = source.flex_direction,
+        "grid-template-columns" => target.grid_columns = source.grid_columns,
+        "gap" => target.gap_px = source.gap_px,
+        "font-size" => target.font_size_px = source.font_size_px,
+        "margin-top" => target.margin_before_px = source.margin_before_px,
+        "margin-bottom" => target.margin_after_px = source.margin_after_px,
+        "padding-top" => target.padding_top_px = source.padding_top_px,
+        "padding-right" => target.padding_right_px = source.padding_right_px,
+        "padding-bottom" => target.padding_bottom_px = source.padding_bottom_px,
+        "padding-left" => target.padding_left_px = source.padding_left_px,
+        _ => {}
+    }
+}
+
+fn apply_global_keyword(
+    style: &mut ComputedStyle,
+    parent: &ComputedStyle,
+    property: &str,
+    keyword: CssGlobalKeyword,
+) {
+    let initial = ComputedStyle::initial();
+    match keyword {
+        CssGlobalKeyword::Inherit => assign_property_from(style, parent, property),
+        CssGlobalKeyword::Initial => assign_property_from(style, &initial, property),
+        CssGlobalKeyword::Unset => {
+            if property_inherits_by_default(property) {
+                assign_property_from(style, parent, property);
+            } else {
+                assign_property_from(style, &initial, property);
+            }
+        }
+    }
+}
+
+fn apply_value(
+    style: &mut ComputedStyle,
+    parent: &ComputedStyle,
+    property: &str,
+    value: &CssValue,
+) {
+    if let CssValue::Global(keyword) = value {
+        apply_global_keyword(style, parent, property, *keyword);
+        return;
+    }
+
     match (property, value) {
         ("display", CssValue::Display(value)) => {
             style.display = match value.as_str() {
@@ -281,7 +338,12 @@ fn resolve_element_style(
             &custom_properties,
             parent_style.computed.font_size_px,
         )?;
-        apply_value(&mut computed, &declaration.property, &value);
+        apply_value(
+            &mut computed,
+            &parent_style.computed,
+            &declaration.property,
+            &value,
+        );
     }
 
     Ok(ResolvedStyle {
@@ -446,6 +508,40 @@ mod tests {
             .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
             .unwrap();
         assert_eq!(styles[paragraph.id].computed.font_size_px, 26.0);
+    }
+
+    #[test]
+    fn global_keywords_resolve_per_property_semantics() {
+        let document = parse_document(
+            "<html><body><div class=\"parent\"><span class=\"inherit\">I</span><span class=\"initial\">N</span><span class=\"unset\">U</span></div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".parent { font-size: 20px; display: block; padding-left: 9px; }              .inherit { font-size: inherit; padding-left: inherit; }              .initial { font-size: initial; padding-left: initial; }              .unset { font-size: unset; padding-left: unset; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+
+        let find = |class: &str| {
+            document
+                .nodes()
+                .iter()
+                .find(|node| document.attribute(node.id, "class") == Some(class))
+                .unwrap()
+                .id
+        };
+
+        let inherited = &styles[find("inherit")].computed;
+        assert_eq!(inherited.font_size_px, 20.0);
+        assert_eq!(inherited.padding_left_px, 9.0);
+
+        let initial = &styles[find("initial")].computed;
+        assert_eq!(initial.font_size_px, 16.0);
+        assert_eq!(initial.padding_left_px, 0.0);
+
+        let unset = &styles[find("unset")].computed;
+        assert_eq!(unset.font_size_px, 20.0);
+        assert_eq!(unset.padding_left_px, 0.0);
     }
 
     #[test]

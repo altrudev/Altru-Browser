@@ -257,11 +257,19 @@ impl Selector {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CssGlobalKeyword {
+    Inherit,
+    Initial,
+    Unset,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CssValue {
     Display(String),
     Keyword(String),
     GridColumns(u16),
+    Global(CssGlobalKeyword),
     Px(f32),
     RelativeFont(AcirRelativeLength),
     Var(String),
@@ -618,8 +626,22 @@ fn parse_declarations_with_translations(
         let property = property.trim().to_ascii_lowercase();
         let value = value.trim();
 
+        let global_keyword = match value {
+            "inherit" => Some(CssGlobalKeyword::Inherit),
+            "initial" => Some(CssGlobalKeyword::Initial),
+            "unset" => Some(CssGlobalKeyword::Unset),
+            _ => None,
+        };
+
         let parsed = if property.starts_with("--") {
             Some(CssValue::Raw(value.into()))
+        } else if let Some(keyword) = global_keyword {
+            match property.as_str() {
+                "display" | "flex-direction" | "grid-template-columns" | "font-size"
+                | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
+                | "padding-bottom" | "padding-left" | "gap" => Some(CssValue::Global(keyword)),
+                _ => None,
+            }
         } else {
             match property.as_str() {
                 "display" => match value {
@@ -1212,6 +1234,22 @@ mod tests {
         let declarations = parse_declarations("future-property: 1; font-size: 18px;").unwrap();
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, "font-size");
+    }
+
+    #[test]
+    fn parses_global_inheritance_keywords_without_approximating_revert() {
+        for value in ["inherit", "initial", "unset"] {
+            let declarations =
+                parse_declarations(&format!("font-size: {value}; display: {value};")).unwrap();
+            assert_eq!(declarations.len(), 2);
+            assert!(matches!(declarations[0].value, CssValue::Global(_)));
+            assert!(matches!(declarations[1].value, CssValue::Global(_)));
+        }
+
+        assert!(matches!(
+            parse_declarations("font-size: revert;"),
+            Err(CssError::InvalidValue { property, .. }) if property == "font-size"
+        ));
     }
 
     #[test]
