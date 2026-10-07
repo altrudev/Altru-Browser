@@ -135,6 +135,7 @@ impl CapabilityEnvironment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirLengthBasis {
     ParentFontSize,
+    CurrentFontSize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,8 +147,12 @@ pub struct AcirRelativeLength {
 }
 
 impl AcirRelativeLength {
-    pub fn resolve_px(self, parent_font_size_px: f32) -> f32 {
-        parent_font_size_px * (self.milli_factor as f32 / 1_000.0)
+    pub fn resolve_px(self, parent_font_size_px: f32, current_font_size_px: f32) -> f32 {
+        let basis = match self.basis {
+            AcirLengthBasis::ParentFontSize => parent_font_size_px,
+            AcirLengthBasis::CurrentFontSize => current_font_size_px,
+        };
+        basis * (self.milli_factor as f32 / 1_000.0)
     }
 }
 
@@ -226,7 +231,13 @@ mod tests {
             milli_factor: 1_250,
             basis: AcirLengthBasis::ParentFontSize,
         };
-        assert_eq!(value.resolve_px(16.0), 20.0);
+        assert_eq!(value.resolve_px(16.0, 20.0), 20.0);
+
+        let current = AcirRelativeLength {
+            milli_factor: 500,
+            basis: AcirLengthBasis::CurrentFontSize,
+        };
+        assert_eq!(current.resolve_px(16.0, 20.0), 10.0);
     }
 
     #[test]
