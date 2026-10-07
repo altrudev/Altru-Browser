@@ -783,6 +783,17 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live network smoke; run explicitly during capability verification"]
+    fn live_native_runtime_loads_cnet() {
+        let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
+        let page = runtime
+            .load("https://cnet.com")
+            .expect("CNET should advance through native document execution");
+        assert!(page.execution.native_semantics);
+        assert!(!page.execution.scene.is_empty());
+    }
+
+    #[test]
     fn built_in_start_page_executes_on_native_engine() {
         let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
         let page = runtime.load(START_URL).unwrap();
