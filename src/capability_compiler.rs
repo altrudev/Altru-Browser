@@ -18,6 +18,7 @@ pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1
 pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
 pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
+pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -73,6 +74,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_FONT_EM_V1,
         source_family: "css-font-relative-length",
         target_semantics: "acir.relative-length.parent-font",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_LENGTH_EM_V1,
+        source_family: "css-length-em",
+        target_semantics: "acir.relative-length.current-font",
         status: TranslationStatus::Verified,
     },
 ];
@@ -194,16 +201,20 @@ fn parse_decimal_milli(raw: &str) -> Result<u32, CapabilityCompilerError> {
 fn parse_decimal_milli_value(raw: &str) -> Result<u32, CapabilityCompilerError> {
     let raw = raw.trim();
     let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
-    if whole.is_empty()
-        || !whole.chars().all(|ch| ch.is_ascii_digit())
-        || !fraction.chars().all(|ch| ch.is_ascii_digit())
+    if (whole.is_empty() && fraction.is_empty())
+        || (!whole.is_empty() && !whole.chars().all(|ch| ch.is_ascii_digit()))
+        || (!fraction.is_empty() && !fraction.chars().all(|ch| ch.is_ascii_digit()))
         || fraction.len() > 3
     {
         return Err(CapabilityCompilerError::UnsupportedValue(raw.into()));
     }
-    let whole = whole
-        .parse::<u32>()
-        .map_err(|_| CapabilityCompilerError::UnsupportedValue(raw.into()))?;
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole
+            .parse::<u32>()
+            .map_err(|_| CapabilityCompilerError::UnsupportedValue(raw.into()))?
+    };
     let mut fraction_milli = if fraction.is_empty() {
         0
     } else {
@@ -241,6 +252,33 @@ pub fn compile_font_size_capability(
         },
         receipt: TranslationReceipt {
             translation_id: CSS_FONT_EM_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+pub fn compile_current_font_length_capability(
+    input: &str,
+) -> Result<Option<CompiledRelativeLengthCapability>, CapabilityCompilerError> {
+    let normalized = input.trim().to_ascii_lowercase();
+    if normalized.ends_with("rem") {
+        return Ok(None);
+    }
+    let Some(number) = normalized.strip_suffix("em") else {
+        return Ok(None);
+    };
+
+    require_verified(CSS_LENGTH_EM_V1)?;
+    let milli_factor = parse_decimal_milli_value(number)?;
+
+    Ok(Some(CompiledRelativeLengthCapability {
+        value: AcirRelativeLength {
+            milli_factor,
+            basis: AcirLengthBasis::CurrentFontSize,
+        },
+        receipt: TranslationReceipt {
+            translation_id: CSS_LENGTH_EM_V1.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
@@ -1047,6 +1085,17 @@ mod tests {
 
         assert!(compile_font_size_capability("1rem").unwrap().is_none());
         assert!(compile_font_size_capability("16px").unwrap().is_none());
+    }
+
+    #[test]
+    fn current_font_em_compiles_with_distinct_basis() {
+        let compiled = compile_current_font_length_capability("1.5em")
+            .unwrap()
+            .unwrap();
+        assert_eq!(compiled.value.milli_factor, 1_500);
+        assert_eq!(compiled.value.basis, AcirLengthBasis::CurrentFontSize);
+        assert_eq!(compiled.receipt.translation_id, CSS_LENGTH_EM_V1);
+        assert!(compile_current_font_length_capability("1rem").unwrap().is_none());
     }
 
     #[test]

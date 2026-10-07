@@ -4,7 +4,8 @@
 //! closed; unknown properties follow CSS error handling and are ignored.
 
 use crate::capability_compiler::{
-    CapabilityCompilerError, TranslationReceipt, compile_font_size_capability,
+    CapabilityCompilerError, TranslationReceipt, compile_current_font_length_capability,
+    compile_font_size_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
     compile_stylesheet_capabilities,
@@ -272,7 +273,7 @@ pub enum CssValue {
     GridColumns(u16),
     Global(CssGlobalKeyword),
     Px(f32),
-    RelativeFont(AcirRelativeLength),
+    RelativeLength(AcirRelativeLength),
     Var(String),
     Raw(String),
 }
@@ -695,7 +696,7 @@ fn parse_declarations_with_translations(
                         Some(CssValue::Var(name.into()))
                     } else if let Some(compiled) = compile_font_size_capability(value)? {
                         translations.push(compiled.receipt);
-                        Some(CssValue::RelativeFont(compiled.value))
+                        Some(CssValue::RelativeLength(compiled.value))
                     } else {
                         Some(CssValue::Px(parse_px(&property, value)?))
                     }
@@ -713,6 +714,9 @@ fn parse_declarations_with_translations(
                             });
                         }
                         Some(CssValue::Var(name.into()))
+                    } else if let Some(compiled) = compile_current_font_length_capability(value)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::RelativeLength(compiled.value))
                     } else {
                         Some(CssValue::Px(parse_px(&property, value)?))
                     }
@@ -1224,7 +1228,7 @@ mod tests {
 
         assert!(matches!(
             compiled.stylesheet.rules[0].declarations[0].value,
-            CssValue::RelativeFont(ref value) if value.milli_factor == 1_250
+            CssValue::RelativeLength(ref value) if value.milli_factor == 1_250
         ));
         assert!(compiled
             .translations
@@ -1261,6 +1265,27 @@ mod tests {
         let declarations = parse_declarations("future-property: 1; font-size: 18px;").unwrap();
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, "font-size");
+    }
+
+    #[test]
+    fn non_font_size_em_uses_current_font_relative_acir() {
+        let compiled = parse_stylesheet_with_environment(
+            ".box { margin-bottom: 1em; padding-left: .5em; gap: 2em; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(compiled.stylesheet.rules[0]
+            .declarations
+            .iter()
+            .all(|declaration| matches!(declaration.value, CssValue::RelativeLength(_))));
+        assert_eq!(
+            compiled
+                .translations
+                .iter()
+                .filter(|receipt| receipt.translation_id == "css.length-em.current-font.v1")
+                .count(),
+            3
+        );
     }
 
     #[test]

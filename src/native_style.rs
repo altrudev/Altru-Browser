@@ -182,6 +182,7 @@ fn resolve_value(
     declaration: &Declaration,
     custom_properties: &BTreeMap<String, String>,
     parent_font_size_px: f32,
+    current_font_size_px: f32,
 ) -> Result<CssValue, CssError> {
     match &declaration.value {
         CssValue::Var(name) => {
@@ -199,7 +200,9 @@ fn resolve_value(
                 }),
             }
         }
-        CssValue::RelativeFont(value) => Ok(CssValue::Px(value.resolve_px(parent_font_size_px))),
+        CssValue::RelativeLength(value) => Ok(CssValue::Px(
+            value.resolve_px(parent_font_size_px, current_font_size_px),
+        )),
         other => Ok(other.clone()),
     }
 }
@@ -345,14 +348,32 @@ fn resolve_element_style(
         }
     }
 
+    // Resolve font-size first because other `em` lengths depend on the element's
+    // final computed font size, not declaration order.
+    for declaration in declarations.iter().filter(|declaration| declaration.property == "font-size") {
+        let value = resolve_value(
+            declaration,
+            &custom_properties,
+            parent_style.computed.font_size_px,
+            computed.font_size_px,
+        )?;
+        apply_value(
+            &mut computed,
+            &parent_style.computed,
+            &declaration.property,
+            &value,
+        );
+    }
+
     for declaration in &declarations {
-        if declaration.property.starts_with("--") {
+        if declaration.property.starts_with("--") || declaration.property == "font-size" {
             continue;
         }
         let value = resolve_value(
             declaration,
             &custom_properties,
             parent_style.computed.font_size_px,
+            computed.font_size_px,
         )?;
         apply_value(
             &mut computed,
@@ -582,6 +603,27 @@ mod tests {
         let unset = &styles[find("unset")].computed;
         assert_eq!(unset.font_size_px, 20.0);
         assert_eq!(unset.padding_left_px, 0.0);
+    }
+
+    #[test]
+    fn current_font_em_lengths_ignore_declaration_order() {
+        let document = parse_document(
+            "<html><body><div class=\"box\">X</div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".box { margin-bottom: 1em; padding-left: .5em; font-size: 20px; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let node = document
+            .nodes()
+            .iter()
+            .find(|node| document.attribute(node.id, "class") == Some("box"))
+            .unwrap();
+        assert_eq!(styles[node.id].computed.font_size_px, 20.0);
+        assert_eq!(styles[node.id].computed.margin_after_px, 20.0);
+        assert_eq!(styles[node.id].computed.padding_left_px, 10.0);
     }
 
     #[test]
