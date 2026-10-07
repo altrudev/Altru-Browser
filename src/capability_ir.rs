@@ -30,6 +30,13 @@ pub enum AcirMediaType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirStructuralPredicate {
+    FirstChild,
+    LastChild,
+    OnlyChild,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirInteractionPredicate {
     Focus,
     FocusVisible,
