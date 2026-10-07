@@ -4,10 +4,10 @@
 //! closed; unknown properties follow CSS error handling and are ignored.
 
 use crate::capability_compiler::{
-    CapabilityCompilerError, TranslationReceipt, compile_selector_capability,
-    compile_stylesheet_capabilities,
+    CapabilityCompilerError, TranslationReceipt, compile_font_size_capability,
+    compile_selector_capability, compile_stylesheet_capabilities,
 };
-use crate::capability_ir::{AcirSelectorRelation, CapabilityEnvironment};
+use crate::capability_ir::{AcirRelativeLength, AcirSelectorRelation, CapabilityEnvironment};
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +184,7 @@ pub enum CssValue {
     Keyword(String),
     GridColumns(u16),
     Px(f32),
+    RelativeFont(AcirRelativeLength),
     Var(String),
     Raw(String),
 }
@@ -474,8 +475,11 @@ fn parse_px(property: &str, value: &str) -> Result<f32, CssError> {
     Ok(parsed)
 }
 
-pub fn parse_declarations(input: &str) -> Result<Vec<Declaration>, CssError> {
+fn parse_declarations_with_translations(
+    input: &str,
+) -> Result<(Vec<Declaration>, Vec<TranslationReceipt>), CssError> {
     let mut declarations = Vec::new();
+    let mut translations = Vec::new();
 
     for raw in input.split(';') {
         let raw = raw.trim();
@@ -525,7 +529,26 @@ pub fn parse_declarations(input: &str) -> Result<Vec<Declaration>, CssError> {
                     }
                     Some(CssValue::GridColumns(tracks.len() as u16))
                 }
-                "font-size" | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
+                "font-size" => {
+                    if let Some(inner) =
+                        value.strip_prefix("var(").and_then(|v| v.strip_suffix(')'))
+                    {
+                        let name = inner.trim();
+                        if !name.starts_with("--") {
+                            return Err(CssError::InvalidValue {
+                                property,
+                                value: value.into(),
+                            });
+                        }
+                        Some(CssValue::Var(name.into()))
+                    } else if let Some(compiled) = compile_font_size_capability(value)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::RelativeFont(compiled.value))
+                    } else {
+                        Some(CssValue::Px(parse_px(&property, value)?))
+                    }
+                }
+                "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
                 | "padding-bottom" | "padding-left" | "gap" => {
                     if let Some(inner) =
                         value.strip_prefix("var(").and_then(|v| v.strip_suffix(')'))
@@ -552,9 +575,12 @@ pub fn parse_declarations(input: &str) -> Result<Vec<Declaration>, CssError> {
         }
     }
 
-    Ok(declarations)
+    Ok((declarations, translations))
 }
 
+pub fn parse_declarations(input: &str) -> Result<Vec<Declaration>, CssError> {
+    Ok(parse_declarations_with_translations(input)?.0)
+}
 fn strip_css_comments(input: &str) -> Result<String, CssError> {
     let mut output = String::with_capacity(input.len());
     let mut rest = input;
@@ -602,7 +628,9 @@ fn parse_compiled_stylesheet(
             Err(error) => return Err(error.into()),
         }
         let selector = parse_selector(selector_source)?;
-        let declarations = parse_declarations(&rest[open + 1..close])?;
+        let (declarations, declaration_translations) =
+            parse_declarations_with_translations(&rest[open + 1..close])?;
+        translations.extend(declaration_translations);
         rules.push(Rule {
             selector,
             declarations,
@@ -789,6 +817,32 @@ mod tests {
                 Err(CssError::UnsupportedSelector(_))
             ));
         }
+    }
+
+    #[test]
+    fn font_em_is_lowered_through_acir_and_receipted() {
+        let compiled = parse_stylesheet_with_environment(
+            "p { font-size: 1.25em; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            compiled.stylesheet.rules[0].declarations[0].value,
+            CssValue::RelativeFont(ref value) if value.milli_factor == 1_250
+        ));
+        assert!(compiled
+            .translations
+            .iter()
+            .any(|receipt| receipt.translation_id == "css.font-em.v1"));
+    }
+
+    #[test]
+    fn rem_is_not_silently_treated_as_em() {
+        assert!(matches!(
+            parse_declarations("font-size: 1rem;"),
+            Err(CssError::InvalidValue { property, .. }) if property == "font-size"
+        ));
     }
 
     #[test]
