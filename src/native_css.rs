@@ -711,7 +711,10 @@ mod tests {
     fn media_query_is_lowered_through_capability_compiler() {
         let compiled = parse_stylesheet_with_environment(
             "p { font-size: 18px; } @media (min-resolution:192dpi) { p { font-size: 22px; } }",
-            &CapabilityEnvironment { resolution_dpi: 96 },
+            &CapabilityEnvironment {
+                resolution_dpi: 96,
+                ..CapabilityEnvironment::default()
+            },
         )
         .unwrap();
 
