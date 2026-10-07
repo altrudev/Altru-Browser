@@ -792,11 +792,14 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_combinator_fails_closed() {
-        assert!(matches!(
-            parse_stylesheet("main p { font-size: 20px; }"),
-            Err(CssError::UnsupportedSelector(_))
-        ));
+    fn unsupported_child_and_sibling_combinators_fail_closed() {
+        for selector in ["main > p", "main + p", "main ~ p"] {
+            let css = format!("{selector} {{ font-size: 20px; }}");
+            assert!(matches!(
+                parse_stylesheet(&css),
+                Err(CssError::UnsupportedSelector(_))
+            ));
+        }
     }
 
     #[test]
