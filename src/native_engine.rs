@@ -5,10 +5,12 @@
 
 use sha2::{Digest, Sha256};
 
+use crate::capability_compiler::TranslationReceipt;
+use crate::capability_ir::CapabilityEnvironment;
 use crate::engine_api::{
     EngineAdapter, EngineCapability, EngineManifest, PlatformClaim, PlatformStatus, PromotionState,
 };
-use crate::native_css::{CssError, stylesheet_from_document};
+use crate::native_css::{CssError, stylesheet_from_document_with_environment};
 use crate::native_dom::NativeDocument;
 use crate::native_html::{HtmlParseError, parse_document};
 use crate::native_layout::{layout_document_with_styles, scene_from_layout};
@@ -49,6 +51,7 @@ pub struct NativeExecutionEvidence {
     pub input_sha256: String,
     pub artifact_sha256: String,
     pub execution_sha256: String,
+    pub translation_sha256: String,
     pub mutation_epoch: u64,
     pub scene_epoch: u64,
 }
@@ -59,6 +62,7 @@ pub struct NativeExecution {
     pub scene: Scene,
     pub artifact: String,
     pub evidence: NativeExecutionEvidence,
+    pub translations: Vec<TranslationReceipt>,
     pub native_semantics: bool,
     pub production_promoted: bool,
 }
@@ -125,17 +129,26 @@ fn sha256(bytes: &[u8]) -> String {
 
 pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEngineError> {
     let document = parse_document(input)?;
-    let stylesheet = stylesheet_from_document(&document)?;
-    let layout = layout_document_with_styles(&document, &stylesheet, 800.0)?;
+    let compiled_styles =
+        stylesheet_from_document_with_environment(&document, CapabilityEnvironment::default())?;
+    let translation_material = compiled_styles
+        .translations
+        .iter()
+        .map(TranslationReceipt::canonical_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let translation_sha256 = sha256(translation_material.as_bytes());
+    let layout = layout_document_with_styles(&document, &compiled_styles.stylesheet, 800.0)?;
     let scene = scene_from_layout(&layout);
     let artifact = DeterministicTextRenderer.render(&scene, 800, 600);
 
     let input_sha256 = sha256(input.as_bytes());
     let artifact_sha256 = sha256(artifact.as_bytes());
     let execution_material = format!(
-        "awef-native-n2.1-execution-v1\n{}\n{}\n{}\n{}",
+        "awef-native-n2.1-execution-v2\n{}\n{}\n{}\n{}\n{}",
         input_sha256,
         artifact_sha256,
+        translation_sha256,
         document.mutation_epoch(),
         scene.epoch
     );
@@ -145,6 +158,7 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
         input_sha256,
         artifact_sha256,
         execution_sha256,
+        translation_sha256,
         mutation_epoch: document.mutation_epoch(),
         scene_epoch: scene.epoch,
     };
@@ -154,6 +168,7 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
         scene,
         artifact,
         evidence,
+        translations: compiled_styles.translations,
         native_semantics: true,
         production_promoted: false,
     })
@@ -204,6 +219,24 @@ mod tests {
         assert_eq!(execution.evidence.input_sha256.len(), 64);
         assert_eq!(execution.evidence.artifact_sha256.len(), 64);
         assert_eq!(execution.evidence.execution_sha256.len(), 64);
+        assert_eq!(execution.evidence.translation_sha256.len(), 64);
+    }
+
+    #[test]
+    fn media_query_translation_is_bound_into_native_evidence() {
+        let execution = execute_native_document(
+            "<html><head><style>@media (min-resolution:192dpi) { p { font-size: 30px; } } p { font-size: 18px; }</style></head><body><p>Translated</p></body></html>",
+        )
+        .unwrap();
+        assert_eq!(execution.translations.len(), 1);
+        assert_eq!(
+            execution.translations[0].translation_id,
+            crate::capability_compiler::CSS_MEDIA_ENVIRONMENT_V1
+        );
+        assert_eq!(
+            execution.translations[0].decision,
+            crate::capability_compiler::TranslationDecision::Elided
+        );
     }
 
     #[test]
