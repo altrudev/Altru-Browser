@@ -1,9 +1,11 @@
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const TRANSLATION_PACK_SCHEMA: &str = "altru.companion.translation-pack.v1";
+pub const SIGNED_TRANSLATION_PACK_SCHEMA: &str = "altru.companion.signed-translation-pack.v1";
 pub const ACIR_SCHEMA: &str = "altru.companion.acir.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +75,15 @@ pub struct TranslationPack {
     pub translations: Vec<PromotedTranslation>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedTranslationPack {
+    pub schema: String,
+    pub pack: TranslationPack,
+    pub public_key_hex: String,
+    pub signature_hex: String,
+    pub algorithm: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct SourceConstruct<'a> {
     language: &'a str,
@@ -87,6 +98,8 @@ pub enum CapabilityPackError {
     WrongSchema,
     WrongTarget,
     InvalidBinding,
+    InvalidSignature,
+    MissingTrustKey,
     UnsupportedAcir,
 }
 
@@ -132,18 +145,26 @@ impl CapabilityRuntime {
         Ok(Self { pack, environment })
     }
 
-    pub fn load(
+    pub fn load_signed(
         path: &Path,
+        trusted_key_path: &Path,
         environment: CapabilityEnvironment,
     ) -> Result<Self, CapabilityPackError> {
         let bytes = fs::read(path).map_err(|error| CapabilityPackError::Io(error.to_string()))?;
-        let pack: TranslationPack = serde_json::from_slice(&bytes)
+        let signed: SignedTranslationPack = serde_json::from_slice(&bytes)
             .map_err(|error| CapabilityPackError::Malformed(error.to_string()))?;
-        Self::from_pack(pack, environment)
+        let trusted_key = fs::read_to_string(trusted_key_path)
+            .map_err(|_| CapabilityPackError::MissingTrustKey)?;
+        verify_signed_pack(&signed, trusted_key.trim())?;
+        Self::from_pack(signed.pack, environment)
     }
 
     pub fn load_default() -> Result<Self, CapabilityPackError> {
-        Self::load(&default_pack_path(), CapabilityEnvironment::from_process())
+        Self::load_signed(
+            &default_pack_path(),
+            &default_trust_key_path(),
+            CapabilityEnvironment::from_process(),
+        )
     }
 
     pub fn evaluate_css_media(&self, source: &str) -> Result<Option<bool>, CapabilityPackError> {
@@ -192,6 +213,27 @@ impl CapabilityRuntime {
     }
 }
 
+pub fn default_trust_key_path() -> PathBuf {
+    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+        return PathBuf::from(state_home)
+            .join("altru-companion")
+            .join("trust")
+            .join("frequency-pack.pub");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("state")
+            .join("altru-companion")
+            .join("trust")
+            .join("frequency-pack.pub");
+    }
+    std::env::temp_dir()
+        .join("altru-companion")
+        .join("trust")
+        .join("frequency-pack.pub")
+}
+
 pub fn default_pack_path() -> PathBuf {
     if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
         return PathBuf::from(state_home)
@@ -211,6 +253,35 @@ pub fn default_pack_path() -> PathBuf {
         .join("altru-companion")
         .join("packs")
         .join("altru-browser.json")
+}
+
+
+fn verify_signed_pack(
+    signed: &SignedTranslationPack,
+    trusted_public_key_hex: &str,
+) -> Result<(), CapabilityPackError> {
+    if signed.schema != SIGNED_TRANSLATION_PACK_SCHEMA
+        || signed.algorithm != "ed25519"
+        || signed.public_key_hex != trusted_public_key_hex
+    {
+        return Err(CapabilityPackError::InvalidSignature);
+    }
+
+    let key_bytes: [u8; 32] = hex::decode(&signed.public_key_hex)
+        .map_err(|_| CapabilityPackError::InvalidSignature)?
+        .try_into()
+        .map_err(|_| CapabilityPackError::InvalidSignature)?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&key_bytes).map_err(|_| CapabilityPackError::InvalidSignature)?;
+    let signature_bytes =
+        hex::decode(&signed.signature_hex).map_err(|_| CapabilityPackError::InvalidSignature)?;
+    let signature =
+        Signature::from_slice(&signature_bytes).map_err(|_| CapabilityPackError::InvalidSignature)?;
+    let pack_bytes =
+        serde_json::to_vec(&signed.pack).map_err(|_| CapabilityPackError::InvalidBinding)?;
+    verifying_key
+        .verify(&pack_bytes, &signature)
+        .map_err(|_| CapabilityPackError::InvalidSignature)
 }
 
 fn source_signature(language: &str, feature: &str, source: &str) -> String {
@@ -280,6 +351,44 @@ mod tests {
                 verification_hash: "c".repeat(64),
             }],
         }
+    }
+
+    fn signed_pack(pack: TranslationPack) -> (SignedTranslationPack, String) {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let public_key_hex = hex::encode(signing.verifying_key().to_bytes());
+        let bytes = serde_json::to_vec(&pack).unwrap();
+        let signature_hex = hex::encode(signing.sign(&bytes).to_bytes());
+        (
+            SignedTranslationPack {
+                schema: SIGNED_TRANSLATION_PACK_SCHEMA.into(),
+                pack,
+                public_key_hex: public_key_hex.clone(),
+                signature_hex,
+                algorithm: "ed25519".into(),
+            },
+            public_key_hex,
+        )
+    }
+
+    #[test]
+    fn signed_pack_requires_pinned_key_and_detects_tampering() {
+        let (mut signed, key) =
+            signed_pack(media_pack("@media (min-resolution:192dpi)"));
+        verify_signed_pack(&signed, &key).unwrap();
+
+        let other = "00".repeat(32);
+        assert_eq!(
+            verify_signed_pack(&signed, &other),
+            Err(CapabilityPackError::InvalidSignature)
+        );
+
+        signed.pack.target = "tampered".into();
+        assert_eq!(
+            verify_signed_pack(&signed, &key),
+            Err(CapabilityPackError::InvalidSignature)
+        );
     }
 
     #[test]
