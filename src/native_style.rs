@@ -146,6 +146,7 @@ fn parse_custom_px(property: &str, value: &str) -> Result<f32, CssError> {
 fn resolve_value(
     declaration: &Declaration,
     custom_properties: &BTreeMap<String, String>,
+    parent_font_size_px: f32,
 ) -> Result<CssValue, CssError> {
     match &declaration.value {
         CssValue::Var(name) => {
@@ -163,6 +164,7 @@ fn resolve_value(
                 }),
             }
         }
+        CssValue::RelativeFont(value) => Ok(CssValue::Px(value.resolve_px(parent_font_size_px))),
         other => Ok(other.clone()),
     }
 }
@@ -242,7 +244,11 @@ fn resolve_element_style(
         if declaration.property.starts_with("--") {
             continue;
         }
-        let value = resolve_value(declaration, &custom_properties)?;
+        let value = resolve_value(
+            declaration,
+            &custom_properties,
+            parent_style.computed.font_size_px,
+        )?;
         apply_value(&mut computed, &declaration.property, &value);
     }
 
@@ -361,6 +367,26 @@ mod tests {
             .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
             .unwrap();
         assert_eq!(styles[paragraph.id].computed.font_size_px, 26.0);
+    }
+
+    #[test]
+    fn em_font_size_resolves_against_parent_font_size() {
+        let document = parse_document(
+            "<html><body><div class=\"parent\"><span class=\"child\">X</span></div></body></html>",
+        )
+        .unwrap();
+        let sheet = parse_stylesheet(
+            ".parent { font-size: 20px; } .child { font-size: 1.5em; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+
+        let span = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "span"))
+            .unwrap();
+        assert_eq!(styles[span.id].computed.font_size_px, 30.0);
     }
 
     #[test]
