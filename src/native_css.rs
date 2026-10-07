@@ -154,20 +154,22 @@ impl Selector {
             return false;
         }
 
-        if let Some((relation, ancestor)) = &self.ancestor {
+        if let Some((relation, related)) = &self.ancestor {
             let matched = match relation {
-                AcirSelectorRelation::Descendant => {
-                    let mut current = candidate.parent;
-                    let mut found = false;
-                    while let Some(parent_id) = current {
-                        if ancestor.matches(document, parent_id) {
-                            found = true;
-                            break;
-                        }
-                        current = document.node(parent_id).and_then(|parent| parent.parent);
-                    }
-                    found
-                }
+                AcirSelectorRelation::Descendant => document
+                    .ancestor_elements(node)
+                    .into_iter()
+                    .any(|ancestor_id| related.matches(document, ancestor_id)),
+                AcirSelectorRelation::Child => document
+                    .element_parent(node)
+                    .is_some_and(|parent_id| related.matches(document, parent_id)),
+                AcirSelectorRelation::AdjacentSibling => document
+                    .previous_element_sibling(node)
+                    .is_some_and(|sibling_id| related.matches(document, sibling_id)),
+                AcirSelectorRelation::GeneralSibling => document
+                    .previous_element_siblings(node)
+                    .into_iter()
+                    .any(|sibling_id| related.matches(document, sibling_id)),
             };
             if !matched {
                 return false;
