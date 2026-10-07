@@ -624,7 +624,7 @@ fn parse_declarations_with_translations(
             match property.as_str() {
                 "display" => match value {
                     "none" | "block" | "inline" | "inline-block" | "flex" | "inline-flex"
-                    | "grid" | "inline-grid" => Some(CssValue::Display(value.into()))
+                    | "grid" | "inline-grid" => Some(CssValue::Display(value.into())),
                     _ => {
                         return Err(CssError::InvalidValue {
                             property,
