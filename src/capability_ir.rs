@@ -39,6 +39,32 @@ pub enum AcirInteractionPredicate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirStructuralPredicate {
+    FirstChild,
+    LastChild,
+    OnlyChild,
+    NthChildIndex(u32),
+    NthChildOdd,
+    NthChildEven,
+}
+
+impl AcirStructuralPredicate {
+    pub fn matches(self, element_index: usize, element_count: usize) -> bool {
+        if element_index == 0 || element_count == 0 || element_index > element_count {
+            return false;
+        }
+        match self {
+            Self::FirstChild => element_index == 1,
+            Self::LastChild => element_index == element_count,
+            Self::OnlyChild => element_count == 1,
+            Self::NthChildIndex(expected) => element_index == expected as usize,
+            Self::NthChildOdd => element_index % 2 == 1,
+            Self::NthChildEven => element_index % 2 == 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirSelectorBoolean {
     Any,
     None,
@@ -205,6 +231,17 @@ mod tests {
             ],
         };
         assert!(environment.evaluate_condition(&condition));
+    }
+
+    #[test]
+    fn structural_predicates_are_deterministic() {
+        assert!(AcirStructuralPredicate::FirstChild.matches(1, 3));
+        assert!(AcirStructuralPredicate::LastChild.matches(3, 3));
+        assert!(AcirStructuralPredicate::OnlyChild.matches(1, 1));
+        assert!(AcirStructuralPredicate::NthChildIndex(2).matches(2, 4));
+        assert!(AcirStructuralPredicate::NthChildOdd.matches(3, 5));
+        assert!(AcirStructuralPredicate::NthChildEven.matches(4, 5));
+        assert!(!AcirStructuralPredicate::OnlyChild.matches(1, 2));
     }
 
     #[test]
