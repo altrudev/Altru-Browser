@@ -5,7 +5,7 @@
 
 use crate::capability_compiler::{
     CapabilityCompilerError, TranslationReceipt, compile_current_font_length_capability,
-    compile_font_size_capability, compile_pseudo_element_capability,
+    compile_font_size_capability, compile_grid_repeat_capability, compile_pseudo_element_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
     compile_selector_structural_capability, compile_stylesheet_capabilities,
@@ -807,17 +807,33 @@ fn parse_declarations_with_translations(
                     }
                 },
                 "grid-template-columns" => {
-                    let tracks = value.split_ascii_whitespace().collect::<Vec<_>>();
-                    if tracks.is_empty()
-                        || tracks.len() > 12
-                        || tracks.iter().any(|track| *track != "1fr")
-                    {
-                        return Err(CssError::InvalidValue {
-                            property,
-                            value: value.into(),
-                        });
-                    }
-                    Some(CssValue::GridColumns(tracks.len() as u16))
+                    let columns = match compile_grid_repeat_capability(value) {
+                        Ok(Some(compiled)) => {
+                            translations.push(compiled.receipt);
+                            compiled.columns
+                        }
+                        Ok(None) => {
+                            let tracks = value.split_ascii_whitespace().collect::<Vec<_>>();
+                            if tracks.is_empty()
+                                || tracks.len() > 12
+                                || tracks.iter().any(|track| *track != "1fr")
+                            {
+                                return Err(CssError::InvalidValue {
+                                    property,
+                                    value: value.into(),
+                                });
+                            }
+                            tracks.len() as u16
+                        }
+                        Err(CapabilityCompilerError::UnsupportedValue(_)) => {
+                            return Err(CssError::InvalidValue {
+                                property,
+                                value: value.into(),
+                            });
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    Some(CssValue::GridColumns(columns))
                 }
                 "content" => {
                     if matches!(value, "none" | "normal") {
@@ -1321,6 +1337,25 @@ mod tests {
     #[test]
     fn top_level_pseudo_still_routes_out_of_simple_selector() {
         assert!(parse_simple_selector(".card:hover").is_err());
+    }
+
+    #[test]
+    fn grid_repeat_compiles_to_existing_native_tracks() {
+        let sheet = parse_stylesheet_with_environment(
+            ".grid { display: grid; grid-template-columns: repeat(5, 1fr); }",
+            CapabilityEnvironment::desktop(800),
+        ).unwrap();
+        assert!(sheet.stylesheet.rules[0].declarations.iter().any(|d|
+            d.property == "grid-template-columns"
+                && d.value == CssValue::GridColumns(5)
+        ));
+        assert!(sheet.translations.iter().any(|receipt|
+            receipt.translation_id == "css.grid-repeat.v1"
+        ));
+        assert!(matches!(
+            parse_stylesheet(".grid { grid-template-columns: repeat(13, 1fr); }"),
+            Err(CssError::InvalidValue { property, .. }) if property == "grid-template-columns"
+        ));
     }
 
     #[test]
