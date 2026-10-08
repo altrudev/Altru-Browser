@@ -9,7 +9,7 @@ use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
     AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirPseudoElement, AcirRelativeLength,
     AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirStructuralPredicate,
-    AcirSupportCondition, CapabilityEnvironment,
+    AcirSupportCondition, AcirGridTrack, AcirGridTrackList, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
@@ -26,6 +26,7 @@ pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
 pub const CSS_LENGTH_ZERO_V1: &str = "css.length-zero.v1";
 pub const CSS_GRID_REPEAT_FIXED_FR_V1: &str = "css.grid-repeat-fixed-fr.v1";
+pub const CSS_GRID_TRACK_SYNTAX_V1: &str = "css.grid-track-syntax.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -41,6 +42,12 @@ pub struct TranslationSpec {
 }
 
 pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
+    TranslationSpec {
+        id: CSS_GRID_TRACK_SYNTAX_V1,
+        source_family: "css-grid-track-syntax",
+        target_semantics: "acir.grid-track-list.candidate",
+        status: TranslationStatus::Verified,
+    },
     TranslationSpec {
         id: CSS_MEDIA_ENVIRONMENT_V1,
         source_family: "css-media-environment",
@@ -209,6 +216,13 @@ pub struct CompiledGridTrackCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledGridTrackSyntax {
+    pub tracks: AcirGridTrackList,
+    pub receipt: TranslationReceipt,
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityCompilerError {
     MalformedAtRule,
     UnsupportedMediaQuery(String),
@@ -347,6 +361,46 @@ pub fn compile_current_font_length_capability(
             decision: TranslationDecision::Admitted,
         },
     }))
+}
+
+/// Normalize explicit bounded track syntax without activating native layout.
+/// Promotion to layout requires intrinsic sizing and geometry proof (H2/H3).
+pub fn compile_grid_track_syntax(
+    input: &str,
+) -> Result<CompiledGridTrackSyntax, CapabilityCompilerError> {
+    let raw = input.trim().to_ascii_lowercase();
+    let mut columns = Vec::new();
+    let source_tokens = raw.split_ascii_whitespace().collect::<Vec<_>>();
+    if source_tokens.is_empty() || source_tokens.len() > 12 {
+        return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+    }
+    for token in source_tokens {
+        let track = if token == "auto" {
+            AcirGridTrack::Auto
+        } else if let Some(number) = token.strip_suffix("fr") {
+            let weight = parse_decimal_milli_value(number)?;
+            if weight == 0 {
+                return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+            }
+            AcirGridTrack::FractionMilli(weight)
+        } else {
+            return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+        };
+        columns.push(track);
+    }
+    let tracks = AcirGridTrackList { columns };
+    if !tracks.is_well_formed() {
+        return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+    }
+    require_verified(CSS_GRID_TRACK_SYNTAX_V1)?;
+    Ok(CompiledGridTrackSyntax {
+        tracks,
+        receipt: TranslationReceipt {
+            translation_id: CSS_GRID_TRACK_SYNTAX_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    })
 }
 
 pub fn compile_grid_track_capability(
@@ -1783,6 +1837,24 @@ mod tests {
         );
         assert!(compile_grid_track_capability("repeat(auto-fit, 1fr)").is_err());
         assert!(compile_grid_track_capability("repeat(3, 2fr)").is_err());
+    }
+
+    #[test]
+    fn grid_track_ir_preserves_auto_and_fraction_semantics() {
+        let a = compile_grid_track_syntax("1fr auto").unwrap();
+        let b = compile_grid_track_syntax("auto 1fr").unwrap();
+        let c = compile_grid_track_syntax("1fr 1fr").unwrap();
+        assert_eq!(a.tracks.columns, vec![AcirGridTrack::FractionMilli(1000), AcirGridTrack::Auto]);
+        assert_eq!(b.tracks.columns, vec![AcirGridTrack::Auto, AcirGridTrack::FractionMilli(1000)]);
+        assert_ne!(a.tracks, c.tracks);
+        assert_eq!(a.receipt.translation_id, CSS_GRID_TRACK_SYNTAX_V1);
+    }
+
+    #[test]
+    fn grid_track_ir_refuses_invalid_and_unbounded_values() {
+        for input in ["", "0fr auto", "auto-fit", "minmax(0,1fr)", "repeat(2, 1fr)", "13fr".repeat(13).as_str()] {
+            assert!(compile_grid_track_syntax(input).is_err(), "{input}");
+        }
     }
 
     #[test]

@@ -177,6 +177,31 @@ pub enum AcirSupportCondition {
     Not(Box<AcirSupportCondition>),
 }
 
+/// Canonical grid tracks. Syntax normalization does not imply layout support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcirGridTrack {
+    /// Fractional free-space weight in thousandths; must be positive.
+    FractionMilli(u32),
+    /// Intrinsically-sized track, never equivalent to a fraction track.
+    Auto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcirGridTrackList {
+    pub columns: Vec<AcirGridTrack>,
+}
+
+impl AcirGridTrackList {
+    pub fn is_well_formed(&self) -> bool {
+        !self.columns.is_empty()
+            && self.columns.len() <= 12
+            && self.columns.iter().all(|t| match t {
+                AcirGridTrack::FractionMilli(v) => *v > 0,
+                AcirGridTrack::Auto => true,
+            })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirLengthBasis {
     ParentFontSize,
