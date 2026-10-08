@@ -9,7 +9,7 @@ use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
     AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirPseudoElement, AcirRelativeLength,
     AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirStructuralPredicate,
-    AcirSupportCondition, CapabilityEnvironment,
+    AcirSupportCondition, AcirGridTrack, AcirGridTrackList, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
