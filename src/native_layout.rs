@@ -3,11 +3,11 @@
 //! Layout consumes AWEF-resolved styles and walks the DOM recursively. This
 //! creates the formatting-context boundary needed for later flex/grid support.
 
-use crate::native_css::StyleSheet;
+use crate::native_css::{CssValue, StyleSheet};
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 use crate::native_layout_taffy::{GeometryChild, GeometryMode, GeometryRequest, solve_geometry};
 use crate::native_scene::{Scene, SceneCommand};
-use crate::capability_ir::AcirPseudoElement;
+use crate::capability_ir::{AcirGeneratedContent, AcirPseudoElement};
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_style::{
     ComputedStyle, Display, FlexDirection, ResolvedStyle, resolve_pseudo_style_for_element,
@@ -80,6 +80,76 @@ fn first_letter_sizes(
     }
 
     Ok(result)
+}
+
+type GeneratedText = (String, f32);
+type GeneratedPair = (Option<GeneratedText>, Option<GeneratedText>);
+
+fn generated_content_for_elements(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    sheet: &StyleSheet,
+) -> Result<Vec<GeneratedPair>, crate::native_css::CssError> {
+    let mut result = vec![(None, None); document.nodes().len()];
+    let interaction = InteractionSnapshot::default();
+    for node in document.nodes() {
+        if !matches!(node.kind, NodeKind::Element { .. }) {
+            continue;
+        }
+        let Some(base_style) = styles.get(node.id) else {
+            continue;
+        };
+        for (target, before) in [
+            (AcirPseudoElement::Before, true),
+            (AcirPseudoElement::After, false),
+        ] {
+            let mut matching = sheet.rules.iter().filter(|rule| {
+                rule.selector.pseudo_element == Some(target)
+                    && rule.selector.matches_with_interaction(document, node.id, &interaction)
+            }).collect::<Vec<_>>();
+            matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+            let mut content = AcirGeneratedContent::None;
+            for rule in matching {
+                for declaration in &rule.declarations {
+                    if declaration.property == "content" {
+                        if let CssValue::GeneratedContent(value) = &declaration.value {
+                            content = value.clone();
+                        }
+                    }
+                }
+            }
+            if let AcirGeneratedContent::Literal(text) = content {
+                if !text.is_empty() {
+                    let size = resolve_pseudo_style_for_element(
+                        document, node.id, base_style, sheet, &interaction, target,
+                    )?.map(|style| style.computed.font_size_px)
+                        .unwrap_or(base_style.computed.font_size_px);
+                    if before {
+                        result[node.id].0 = Some((text, size));
+                    } else {
+                        result[node.id].1 = Some((text, size));
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn emit_generated_text(
+    fragments: &mut Vec<LayoutFragment>,
+    node: NodeId,
+    generated: &GeneratedText,
+    x: f32,
+    width: f32,
+    y: &mut f32,
+) {
+    let height = (generated.1 * 1.35).ceil();
+    fragments.push(LayoutFragment {
+        node, x, y: *y, width: width.max(1.0),
+        height, font_size_px: generated.1, text: Some(generated.0.clone()),
+    });
+    *y += height;
 }
 
 fn estimate_subtree_height(
@@ -188,6 +258,7 @@ fn layout_node(
     document: &NativeDocument,
     styles: &[ResolvedStyle],
     first_letter_sizes: &[Option<f32>],
+    generated: &[GeneratedPair],
     node: NodeId,
     x: f32,
     width: f32,
@@ -209,7 +280,7 @@ fn layout_node(
     match &candidate.kind {
         NodeKind::Document => {
             for child in &candidate.children {
-                layout_node(document, styles, first_letter_sizes, *child, x, width, y, fragments)?;
+                layout_node(document, styles, first_letter_sizes, generated, *child, x, width, y, fragments)?;
             }
         }
         NodeKind::Text(text) => {
@@ -295,6 +366,7 @@ fn layout_node(
                         document,
                         styles,
                         first_letter_sizes,
+                        generated,
                         *cell,
                         child_x + cell_width * index as f32,
                         cell_width.max(1.0),
@@ -359,6 +431,7 @@ fn layout_node(
                     document,
                     styles,
                     first_letter_sizes,
+                    generated,
                     *child,
                     child_x + geometry_box.x,
                     geometry_box.width.max(1.0),
@@ -381,8 +454,18 @@ fn layout_node(
             let child_x = x + style.padding_left_px;
             let child_width = (width - style.padding_left_px - style.padding_right_px).max(1.0);
 
+            if let Some((before, _)) = generated.get(node) {
+                if let Some(text) = before {
+                    emit_generated_text(fragments, node, text, child_x, child_width, y);
+                }
+            }
             for child in &candidate.children {
-                layout_node(document, styles, first_letter_sizes, *child, child_x, child_width, y, fragments)?;
+                layout_node(document, styles, first_letter_sizes, generated, *child, child_x, child_width, y, fragments)?;
+            }
+            if let Some((_, after)) = generated.get(node) {
+                if let Some(text) = after {
+                    emit_generated_text(fragments, node, text, child_x, child_width, y);
+                }
             }
 
             if block {
@@ -401,6 +484,21 @@ pub fn layout_document_with_styles(
     let width = viewport_width.max(1.0);
     let styles = resolve_styles(document, sheet)?;
     let first_letter_sizes = first_letter_sizes(document, &styles, sheet)?;
+    let generated = generated_content_for_elements(document, &styles, sheet)?;
+    for node in document.nodes() {
+        let has_generated = generated.get(node.id)
+            .is_some_and(|(before, after)| before.is_some() || after.is_some());
+        if has_generated {
+            let display = styles[node.id].computed.display;
+            if display.is_flex_context() || display.is_grid_context()
+                || matches!(display, Display::Table | Display::InlineTable)
+            {
+                return Err(crate::native_css::CssError::UnsupportedLayout(
+                    "generated content in advanced formatting context".into()
+                ));
+            }
+        }
+    }
     let mut y = 16.0f32;
     let mut fragments = Vec::new();
 
@@ -408,6 +506,7 @@ pub fn layout_document_with_styles(
         document,
         &styles,
         &first_letter_sizes,
+        &generated,
         document.root(),
         16.0,
         (width - 32.0).max(1.0),
@@ -470,6 +569,21 @@ mod tests {
         let sheet = parse_stylesheet(".lead { font-size: 22px; }").unwrap();
         let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
         assert_eq!(layout.fragments[0].font_size_px, 22.0);
+    }
+
+    #[test]
+    fn generated_before_after_are_native_rendered_fragments() {
+        let document = crate::native_html::parse_document(
+            "<html><body><p class=\"notice\">Body</p></body></html>",
+        ).unwrap();
+        let sheet = crate::native_css::parse_stylesheet(
+            ".notice:before { content: \"Before\"; } .notice:after { content: \"After\"; }",
+        ).unwrap();
+        let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
+        let texts = layout.fragments.iter()
+            .filter_map(|fragment| fragment.text.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(texts, vec!["Before", "Body", "After"]);
     }
 
     #[test]
