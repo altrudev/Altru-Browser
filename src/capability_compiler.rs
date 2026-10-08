@@ -25,6 +25,7 @@ pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
 pub const CSS_LENGTH_ZERO_V1: &str = "css.length-zero.v1";
+pub const CSS_GRID_REPEAT_FIXED_FR_V1: &str = "css.grid-repeat-fixed-fr.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationStatus {
@@ -118,6 +119,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         target_semantics: "native.px-zero",
         status: TranslationStatus::Verified,
     },
+    TranslationSpec {
+        id: CSS_GRID_REPEAT_FIXED_FR_V1,
+        source_family: "css-grid-repeat-fixed-fr",
+        target_semantics: "native.grid-columns",
+        status: TranslationStatus::Verified,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +199,12 @@ pub struct CompiledSelectorStructuralCapability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledRelativeLengthCapability {
     pub value: AcirRelativeLength,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledGridTrackCapability {
+    pub columns: u16,
     pub receipt: TranslationReceipt,
 }
 
@@ -330,6 +343,39 @@ pub fn compile_current_font_length_capability(
         },
         receipt: TranslationReceipt {
             translation_id: CSS_LENGTH_EM_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+pub fn compile_grid_track_capability(
+    input: &str,
+) -> Result<Option<CompiledGridTrackCapability>, CapabilityCompilerError> {
+    let normalized = input.trim().to_ascii_lowercase();
+    let Some(inner) = normalized
+        .strip_prefix("repeat(")
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return Ok(None);
+    };
+
+    let Some((count, track)) = inner.split_once(',') else {
+        return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+    };
+    let count = count
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| CapabilityCompilerError::UnsupportedValue(input.into()))?;
+    if count == 0 || count > 12 || track.trim() != "1fr" {
+        return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+    }
+
+    require_verified(CSS_GRID_REPEAT_FIXED_FR_V1)?;
+    Ok(Some(CompiledGridTrackCapability {
+        columns: count,
+        receipt: TranslationReceipt {
+            translation_id: CSS_GRID_REPEAT_FIXED_FR_V1.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
@@ -1723,6 +1769,20 @@ mod tests {
         assert_eq!(after.base_selector, ".card");
         assert_eq!(after.target, AcirPseudoElement::After);
         assert_eq!(after.receipt.translation_id, CSS_PSEUDO_GENERATED_V1);
+    }
+
+    #[test]
+    fn fixed_fr_grid_repeat_compiles_to_native_column_count() {
+        let compiled = compile_grid_track_capability("repeat(5, 1fr)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(compiled.columns, 5);
+        assert_eq!(
+            compiled.receipt.translation_id,
+            CSS_GRID_REPEAT_FIXED_FR_V1
+        );
+        assert!(compile_grid_track_capability("repeat(auto-fit, 1fr)").is_err());
+        assert!(compile_grid_track_capability("repeat(3, 2fr)").is_err());
     }
 
     #[test]
