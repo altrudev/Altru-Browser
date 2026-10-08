@@ -8,11 +8,12 @@ use crate::capability_compiler::{
     compile_font_size_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
-    compile_stylesheet_capabilities, compile_zero_length_capability,
+    compile_selector_structural_capability, compile_stylesheet_capabilities,
+    compile_zero_length_capability,
 };
 use crate::capability_ir::{
     AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean, AcirSelectorRelation,
-    CapabilityEnvironment,
+    AcirStructuralPredicate, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
@@ -60,6 +61,7 @@ pub struct Selector {
     pub attributes: Vec<AttributeSelector>,
     pub root: bool,
     pub states: Vec<AcirInteractionPredicate>,
+    pub structural: Vec<AcirStructuralPredicate>,
     pub any_of: Vec<Selector>,
     pub where_any_of: Vec<Selector>,
     pub none_of: Vec<Selector>,
@@ -73,6 +75,7 @@ impl Selector {
             (self.classes.len()
                 + self.attributes.len()
                 + self.states.len()
+                + self.structural.len()
                 + usize::from(self.root))
                 .min(u16::MAX as usize) as u16,
             u16::from(self.tag.is_some()),
@@ -231,6 +234,23 @@ impl Selector {
             .any(|predicate| !interaction.matches(document, node, *predicate))
         {
             return false;
+        }
+
+        if !self.structural.is_empty() {
+            let Some(parent) = candidate.parent else {
+                return false;
+            };
+            let Some(index) = document.element_index(node) else {
+                return false;
+            };
+            let count = document.element_children(parent).len();
+            if self
+                .structural
+                .iter()
+                .any(|predicate| !predicate.matches(index, count))
+            {
+                return false;
+            }
         }
 
         if let Some((relation, related)) = &self.ancestor {
@@ -423,6 +443,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         attributes: Vec::new(),
         root: false,
         states: Vec::new(),
+        structural: Vec::new(),
         any_of: Vec::new(),
         where_any_of: Vec::new(),
         none_of: Vec::new(),
@@ -532,6 +553,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 attributes: Vec::new(),
                 root: false,
                 states: Vec::new(),
+                structural: Vec::new(),
                 any_of: Vec::new(),
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
@@ -569,6 +591,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 attributes: Vec::new(),
                 root: false,
                 states: Vec::new(),
+                structural: Vec::new(),
                 any_of: Vec::new(),
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
@@ -578,6 +601,35 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             parse_selector(&compiled.base_selector)?
         };
         selector.states.extend(compiled.predicates);
+        return Ok(selector);
+    }
+
+    let compiled_structural = match compile_selector_structural_capability(input) {
+        Ok(compiled) => compiled,
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(compiled) = compiled_structural {
+        let mut selector = if compiled.base_selector.is_empty() {
+            Selector {
+                tag: None,
+                id: None,
+                classes: Vec::new(),
+                attributes: Vec::new(),
+                root: false,
+                states: Vec::new(),
+                structural: Vec::new(),
+                any_of: Vec::new(),
+                where_any_of: Vec::new(),
+                none_of: Vec::new(),
+                ancestor: None,
+            }
+        } else {
+            parse_selector(&compiled.base_selector)?
+        };
+        selector.structural.extend(compiled.predicates);
         return Ok(selector);
     }
 
@@ -791,6 +843,9 @@ fn collect_selector_translation_receipts(
                 if let Some(state) = compile_selector_state_capability(compound)? {
                     translations.push(state.receipt);
                 }
+                if let Some(structural) = compile_selector_structural_capability(compound)? {
+                    translations.push(structural.receipt);
+                }
             }
             translations.push(compiled_selector.receipt);
         }
@@ -800,6 +855,9 @@ fn collect_selector_translation_receipts(
             }
             if let Some(state) = compile_selector_state_capability(selector_source)? {
                 translations.push(state.receipt);
+            }
+            if let Some(structural) = compile_selector_structural_capability(selector_source)? {
+                translations.push(structural.receipt);
             }
         }
         Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
@@ -1101,6 +1159,56 @@ mod tests {
             .unwrap();
         let selector = parse_selector("article .lead").unwrap();
         assert!(!selector.matches(&document, target.id));
+    }
+
+    #[test]
+    fn structural_selector_family_matches_element_positions() {
+        let document = parse_document(
+            "<html><body><div><button class=\"wp-block-button\">A</button><button class=\"wp-block-button\">B</button><button class=\"wp-block-button\">C</button></div></body></html>",
+        )
+        .unwrap();
+        let buttons = document
+            .nodes()
+            .iter()
+            .filter(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "button"))
+            .collect::<Vec<_>>();
+
+        assert!(parse_selector(".wp-block-button:first-child")
+            .unwrap()
+            .matches(&document, buttons[0].id));
+        assert!(parse_selector(".wp-block-button:last-child")
+            .unwrap()
+            .matches(&document, buttons[2].id));
+        assert!(parse_selector(".wp-block-button:nth-child(2)")
+            .unwrap()
+            .matches(&document, buttons[1].id));
+        assert!(parse_selector(".wp-block-button:nth-child(odd)")
+            .unwrap()
+            .matches(&document, buttons[2].id));
+        assert!(!parse_selector(".wp-block-button:only-child")
+            .unwrap()
+            .matches(&document, buttons[0].id));
+    }
+
+    #[test]
+    fn structural_selector_translation_is_receipted() {
+        let compiled = parse_stylesheet_with_environment(
+            ".wp-block-button:last-child { margin-bottom: 0; }",
+            CapabilityEnvironment::desktop(800),
+        )
+        .unwrap();
+        assert!(compiled
+            .translations
+            .iter()
+            .any(|receipt| receipt.translation_id == "css.selector-structural.v1"));
+    }
+
+    #[test]
+    fn unsupported_nth_formula_stays_fail_closed() {
+        assert!(matches!(
+            parse_stylesheet("li:nth-child(2n+1) { margin-bottom: 0; }"),
+            Err(CssError::UnsupportedSelector(_))
+        ));
     }
 
     #[test]
