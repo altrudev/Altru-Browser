@@ -295,6 +295,8 @@ pub enum CssValue {
     Global(CssGlobalKeyword),
     Px(f32),
     RelativeLength(AcirRelativeLength),
+    Content(Option<String>),
+    UnsupportedContent(String),
     Var(String),
     Raw(String),
 }
@@ -617,7 +619,24 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         Err(error) => return Err(error.into()),
     };
     if let Some(compiled) = compiled_pseudo {
-        let mut selector = parse_selector(&compiled.base_selector)?;
+        let mut selector = if compiled.base_selector.is_empty() {
+            Selector {
+                tag: None,
+                id: None,
+                classes: Vec::new(),
+                attributes: Vec::new(),
+                root: false,
+                states: Vec::new(),
+                structural: Vec::new(),
+                pseudo_element: None,
+                any_of: Vec::new(),
+                where_any_of: Vec::new(),
+                none_of: Vec::new(),
+                ancestor: None,
+            }
+        } else {
+            parse_selector(&compiled.base_selector)?
+        };
         selector.pseudo_element = Some(compiled.target);
         return Ok(selector);
     }
@@ -799,6 +818,23 @@ fn parse_declarations_with_translations(
                         });
                     }
                     Some(CssValue::GridColumns(tracks.len() as u16))
+                }
+                "content" => {
+                    if matches!(value, "none" | "normal") {
+                        Some(CssValue::Content(None))
+                    } else if value.len() >= 2
+                        && ((value.starts_with('"') && value.ends_with('"'))
+                            || (value.starts_with('\'') && value.ends_with('\'')))
+                    {
+                        let inner = &value[1..value.len() - 1];
+                        if inner.contains('\\') {
+                            Some(CssValue::UnsupportedContent(value.into()))
+                        } else {
+                            Some(CssValue::Content(Some(inner.to_string())))
+                        }
+                    } else {
+                        Some(CssValue::UnsupportedContent(value.into()))
+                    }
                 }
                 "font-size" => {
                     if let Some(inner) =
@@ -1285,6 +1321,24 @@ mod tests {
     #[test]
     fn top_level_pseudo_still_routes_out_of_simple_selector() {
         assert!(parse_simple_selector(".card:hover").is_err());
+    }
+
+    #[test]
+    fn generated_pseudo_selectors_and_content_are_preserved() {
+        let before = parse_selector(":before").unwrap();
+        assert_eq!(before.pseudo_element, Some(AcirPseudoElement::Before));
+
+        let after = parse_selector(".card::after").unwrap();
+        assert_eq!(after.pseudo_element, Some(AcirPseudoElement::After));
+
+        let content = parse_declarations("content: \"hello\";").unwrap();
+        assert!(matches!(
+            &content[0].value,
+            CssValue::Content(Some(text)) if text == "hello"
+        ));
+
+        let none = parse_declarations("content: none;").unwrap();
+        assert!(matches!(none[0].value, CssValue::Content(None)));
     }
 
     #[test]
