@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
     AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirRelativeLength,
-    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirSupportCondition,
-    CapabilityEnvironment,
+    AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirStructuralPredicate,
+    AcirSupportCondition, CapabilityEnvironment,
 };
 
 pub const CSS_MEDIA_ENVIRONMENT_V1: &str = "css.media-environment.v1";
@@ -18,6 +18,7 @@ pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
 pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1";
 pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
 pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
+pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
@@ -71,6 +72,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_LIST_V1,
         source_family: "css-selector-list",
         target_semantics: "native.rule-expansion",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_STRUCTURAL_V1,
+        source_family: "css-selector-structural",
+        target_semantics: "acir.structural-predicate",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -151,6 +158,13 @@ pub struct CompiledSelectorBooleanCapability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledSelectorListCapability {
     pub selectors: Vec<String>,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledSelectorStructuralCapability {
+    pub base_selector: String,
+    pub predicates: Vec<AcirStructuralPredicate>,
     pub receipt: TranslationReceipt,
 }
 
@@ -808,6 +822,83 @@ pub fn compile_selector_state_capability(
         predicates,
         receipt: TranslationReceipt {
             translation_id: CSS_SELECTOR_INTERACTION_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+
+pub fn compile_selector_structural_capability(
+    input: &str,
+) -> Result<Option<CompiledSelectorStructuralCapability>, CapabilityCompilerError> {
+    let mut base = input.trim().to_string();
+    let mut predicates = Vec::new();
+
+    loop {
+        let normalized = base.to_ascii_lowercase();
+
+        if let Some(prefix) = normalized.strip_suffix(":first-child") {
+            let new_len = prefix.len();
+            base.truncate(new_len);
+            base = base.trim_end().to_string();
+            predicates.push(AcirStructuralPredicate::FirstChild);
+            continue;
+        }
+        if let Some(prefix) = normalized.strip_suffix(":last-child") {
+            let new_len = prefix.len();
+            base.truncate(new_len);
+            base = base.trim_end().to_string();
+            predicates.push(AcirStructuralPredicate::LastChild);
+            continue;
+        }
+        if let Some(prefix) = normalized.strip_suffix(":only-child") {
+            let new_len = prefix.len();
+            base.truncate(new_len);
+            base = base.trim_end().to_string();
+            predicates.push(AcirStructuralPredicate::OnlyChild);
+            continue;
+        }
+
+        if normalized.ends_with(')') {
+            if let Some(start) = normalized.rfind(":nth-child(") {
+                let inner_start = start + ":nth-child(".len();
+                let inner = normalized[inner_start..normalized.len() - 1].trim();
+                let predicate = match inner {
+                    "odd" => AcirStructuralPredicate::NthChildOdd,
+                    "even" => AcirStructuralPredicate::NthChildEven,
+                    _ => {
+                        let index = inner
+                            .parse::<u32>()
+                            .map_err(|_| CapabilityCompilerError::UnsupportedSelector(input.into()))?;
+                        if index == 0 {
+                            return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+                        }
+                        AcirStructuralPredicate::NthChildIndex(index)
+                    }
+                };
+                base.truncate(start);
+                base = base.trim_end().to_string();
+                predicates.push(predicate);
+                continue;
+            }
+        }
+
+        break;
+    }
+
+    if predicates.is_empty() {
+        return Ok(None);
+    }
+
+    require_verified(CSS_SELECTOR_STRUCTURAL_V1)?;
+    predicates.reverse();
+
+    Ok(Some(CompiledSelectorStructuralCapability {
+        base_selector: base,
+        predicates,
+        receipt: TranslationReceipt {
+            translation_id: CSS_SELECTOR_STRUCTURAL_V1.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
@@ -1526,6 +1617,31 @@ mod tests {
         assert_eq!(compiled.value.basis, AcirLengthBasis::CurrentFontSize);
         assert_eq!(compiled.receipt.translation_id, CSS_LENGTH_EM_V1);
         assert!(compile_current_font_length_capability("1rem").unwrap().is_none());
+    }
+
+    #[test]
+    fn structural_selector_family_compiles_to_acir_predicates() {
+        let last = compile_selector_structural_capability(".card:last-child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(last.base_selector, ".card");
+        assert_eq!(last.predicates, vec![AcirStructuralPredicate::LastChild]);
+
+        let nth = compile_selector_structural_capability("li:nth-child(odd)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(nth.base_selector, "li");
+        assert_eq!(nth.predicates, vec![AcirStructuralPredicate::NthChildOdd]);
+
+        let exact = compile_selector_structural_capability("li:nth-child(3)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            exact.predicates,
+            vec![AcirStructuralPredicate::NthChildIndex(3)]
+        );
+
+        assert!(compile_selector_structural_capability("li:nth-child(2n+1)").is_err());
     }
 
     #[test]
