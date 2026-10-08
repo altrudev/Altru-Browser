@@ -844,8 +844,13 @@ fn collect_selector_translation_receipts(
                 if let Some(state) = compile_selector_state_capability(compound)? {
                     translations.push(state.receipt);
                 }
-                if let Some(structural) = compile_selector_structural_capability(compound)? {
-                    translations.push(structural.receipt);
+                match compile_selector_structural_capability(compound) {
+                    Ok(Some(structural)) => translations.push(structural.receipt),
+                    Ok(None) => {}
+                    Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+                        return Err(CssError::UnsupportedSelector(compound.into()));
+                    }
+                    Err(error) => return Err(error.into()),
                 }
             }
             translations.push(compiled_selector.receipt);
@@ -857,8 +862,13 @@ fn collect_selector_translation_receipts(
             if let Some(state) = compile_selector_state_capability(selector_source)? {
                 translations.push(state.receipt);
             }
-            if let Some(structural) = compile_selector_structural_capability(selector_source)? {
-                translations.push(structural.receipt);
+            match compile_selector_structural_capability(selector_source) {
+                Ok(Some(structural)) => translations.push(structural.receipt),
+                Ok(None) => {}
+                Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+                    return Err(CssError::UnsupportedSelector(selector_source.into()));
+                }
+                Err(error) => return Err(error.into()),
             }
         }
         Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
