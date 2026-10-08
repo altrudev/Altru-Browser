@@ -425,14 +425,45 @@ fn split_selector_list(input: &str) -> Result<Vec<&str>, CssError> {
     Ok(parts)
 }
 
+fn simple_selector_has_top_level_pseudo_or_space(input: &str) -> Result<bool, CssError> {
+    let mut bracket_depth = 0usize;
+    let mut quote: Option<char> = None;
+
+    for ch in input.chars() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => {
+                if bracket_depth == 0 {
+                    return Err(CssError::UnsupportedSelector(input.into()));
+                }
+                bracket_depth -= 1;
+            }
+            ':' if bracket_depth == 0 => return Ok(true),
+            ch if ch.is_whitespace() && bracket_depth == 0 => return Ok(true),
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || bracket_depth != 0 {
+        return Err(CssError::UnsupportedSelector(input.into()));
+    }
+
+    Ok(false)
+}
+
 fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty()
         || input.trim_start().starts_with('*')
-        || input.contains(':')
-        || input
-            .chars()
-            .any(|ch| ch.is_whitespace() && !input.contains('['))
+        || simple_selector_has_top_level_pseudo_or_space(input)?
     {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
@@ -1239,6 +1270,21 @@ mod tests {
             parse_stylesheet("li:nth-child(2n+1) { margin-bottom: 0; }"),
             Err(CssError::UnsupportedSelector(_))
         ));
+    }
+
+    #[test]
+    fn attribute_value_colon_is_not_misclassified_as_pseudo_syntax() {
+        let selector =
+            parse_selector("p.has-text-align-left[style*=\"writing-mode:vertical-lr\"]").unwrap();
+        assert_eq!(selector.tag.as_deref(), Some("p"));
+        assert_eq!(selector.classes, vec!["has-text-align-left"]);
+        assert_eq!(selector.attributes.len(), 1);
+        assert_eq!(selector.attributes[0].value, "writing-mode:vertical-lr");
+    }
+
+    #[test]
+    fn top_level_pseudo_still_routes_out_of_simple_selector() {
+        assert!(parse_simple_selector(".card:hover").is_err());
     }
 
     #[test]
