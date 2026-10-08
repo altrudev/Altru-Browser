@@ -8,6 +8,7 @@ pub mod engine_api;
 pub mod governor;
 pub mod html_canonical_data;
 pub mod intrinsic_measurement;
+pub mod intrinsic_text;
 pub mod interaction_state;
 pub mod light;
 pub mod metrics;
