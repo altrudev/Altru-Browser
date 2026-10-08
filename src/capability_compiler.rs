@@ -19,6 +19,7 @@ pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1
 pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
 pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_PSEUDO_FIRST_LETTER_V1: &str = "css.pseudo-first-letter.v1";
+pub const CSS_PSEUDO_GENERATED_V1: &str = "css.pseudo-generated.v1";
 pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
@@ -73,6 +74,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_LIST_V1,
         source_family: "css-selector-list",
         target_semantics: "native.rule-expansion",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_PSEUDO_GENERATED_V1,
+        source_family: "css-pseudo-generated",
+        target_semantics: "acir.pseudo-element.generated-content",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -802,24 +809,31 @@ pub fn compile_pseudo_element_capability(
 ) -> Result<Option<CompiledPseudoElementCapability>, CapabilityCompilerError> {
     let trimmed = input.trim();
     let lower = trimmed.to_ascii_lowercase();
-    let suffix = if lower.ends_with("::first-letter") {
-        Some("::first-letter")
+    let (suffix, target, translation_id) = if lower.ends_with("::first-letter") {
+        ("::first-letter", AcirPseudoElement::FirstLetter, CSS_PSEUDO_FIRST_LETTER_V1)
     } else if lower.ends_with(":first-letter") {
-        Some(":first-letter")
+        (":first-letter", AcirPseudoElement::FirstLetter, CSS_PSEUDO_FIRST_LETTER_V1)
+    } else if lower.ends_with("::before") {
+        ("::before", AcirPseudoElement::Before, CSS_PSEUDO_GENERATED_V1)
+    } else if lower.ends_with(":before") {
+        (":before", AcirPseudoElement::Before, CSS_PSEUDO_GENERATED_V1)
+    } else if lower.ends_with("::after") {
+        ("::after", AcirPseudoElement::After, CSS_PSEUDO_GENERATED_V1)
+    } else if lower.ends_with(":after") {
+        (":after", AcirPseudoElement::After, CSS_PSEUDO_GENERATED_V1)
     } else {
-        None
+        return Ok(None);
     };
-    let Some(suffix) = suffix else { return Ok(None); };
-    require_verified(CSS_PSEUDO_FIRST_LETTER_V1)?;
+    require_verified(translation_id)?;
     let base_selector = trimmed[..trimmed.len() - suffix.len()].trim().to_string();
     if base_selector.is_empty() {
         return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
     }
     Ok(Some(CompiledPseudoElementCapability {
         base_selector,
-        target: AcirPseudoElement::FirstLetter,
+        target,
         receipt: TranslationReceipt {
-            translation_id: CSS_PSEUDO_FIRST_LETTER_V1.into(),
+            translation_id: translation_id.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
