@@ -618,7 +618,24 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         Err(error) => return Err(error.into()),
     };
     if let Some(compiled) = compiled_pseudo {
-        let mut selector = parse_selector(&compiled.base_selector)?;
+        let mut selector = if compiled.base_selector.is_empty() {
+            Selector {
+                tag: None,
+                id: None,
+                classes: Vec::new(),
+                attributes: Vec::new(),
+                root: false,
+                states: Vec::new(),
+                structural: Vec::new(),
+                pseudo_element: None,
+                any_of: Vec::new(),
+                where_any_of: Vec::new(),
+                none_of: Vec::new(),
+                ancestor: None,
+            }
+        } else {
+            parse_selector(&compiled.base_selector)?
+        };
         selector.pseudo_element = Some(compiled.target);
         return Ok(selector);
     }
@@ -1304,6 +1321,13 @@ mod tests {
     #[test]
     fn top_level_pseudo_still_routes_out_of_simple_selector() {
         assert!(parse_simple_selector(".card:hover").is_err());
+    }
+
+    #[test]
+    fn bare_before_pseudo_compiles_as_universal_generated_target() {
+        let selector = parse_selector(":before").unwrap();
+        assert_eq!(selector.pseudo_element, Some(AcirPseudoElement::Before));
+        assert_eq!(selector.specificity(), (0, 0, 1));
     }
 
     #[test]
