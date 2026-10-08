@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body { margin: 0; font: 16px monospace; }
+.fixture { display: grid; width: 300px; column-gap: 10px; margin-bottom: 8px; }
+.fixture > div { height: 24px; }
+</style></head><body>
+<div id="fr-auto" class="fixture" style="grid-template-columns: 1fr auto"><div>aaa</div><div>bbbbbbbb</div></div>
+<div id="auto-fr" class="fixture" style="grid-template-columns: auto 1fr"><div>aaa</div><div>bbbbbbbb</div></div>
+<div id="fr-fr" class="fixture" style="grid-template-columns: 1fr 1fr"><div>aaa</div><div>bbbbbbbb</div></div>
+<pre id="grid-proof"></pre>
+<script>
+const cases = ['fr-auto', 'auto-fr', 'fr-fr'].map(id => {
+  const container = document.getElementById(id);
+  const bounds = container.getBoundingClientRect();
+  return { id, template: getComputedStyle(container).gridTemplateColumns,
+    width: bounds.width, children: Array.from(container.children, e => {
+      const b = e.getBoundingClientRect();
+      return { x: b.x - bounds.x, width: b.width, height: b.height };
+    }) };
+});
+document.getElementById('grid-proof').textContent = JSON.stringify(cases);
+</script></body></html>

@@ -1,0 +1,3 @@
+# Independent H4 Grid Geometry Reference (not a promotion proof)
+
+Run `chromium --headless --no-sandbox --disable-gpu --dump-dom file://$PWD/fixtures/grid-differential/reference.html` from the repository root on an isolated test host. Extract the JSON from the `grid-proof` element and record browser version, font resolution, viewport, environment and the exact candidate commit. The fixture compares `1fr auto`, `auto 1fr` and `1fr 1fr` with unequal text. The geometry is a reference observation, not a claim that the candidate solver meets the CSS Grid specification. Do not promote H3/H4/H5/H6 from this fixture alone.
