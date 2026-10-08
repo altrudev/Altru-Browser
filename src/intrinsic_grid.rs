@@ -58,7 +58,15 @@ pub fn candidate_single_row_tracks(
     }
     for (index, track) in tracks.columns.iter().enumerate() {
         if let AcirGridTrack::FractionMilli(weight) = track {
-            widths[index] = (free * f64::from(*weight) / fractions) as f32;
+            let assigned = (free * f64::from(*weight) / fractions) as f32;
+            let IntrinsicMeasurement::Measured(sizes) = measurements[index] else {
+                return Err("unknown intrinsic contribution");
+            };
+            // Candidate-only: never claim CSS grid automatic minimum correctness.
+            if !assigned.is_finite() || assigned < sizes.min_content_px {
+                return Err("fractional track below intrinsic minimum");
+            }
+            widths[index] = assigned;
         }
     }
     let mut offsets = Vec::with_capacity(widths.len());
@@ -96,6 +104,31 @@ mod tests {
         assert_eq!(x.widths_px, vec![230.0, 60.0]);
         assert_eq!(y.widths_px, vec![40.0, 250.0]);
         assert_ne!(x, y);
+    }
+    #[test]
+    fn refuses_fractional_track_below_minimum() {
+        let tracks = AcirGridTrackList {
+            columns: vec![AcirGridTrack::FractionMilli(1000), AcirGridTrack::Auto],
+        };
+        let sizes = [
+            IntrinsicMeasurement::measured(180.0, 210.0),
+            IntrinsicMeasurement::measured(70.0, 90.0),
+        ];
+        assert_eq!(
+            candidate_single_row_tracks(&tracks, &sizes, 200.0, 10.0),
+            Err("fractional track below intrinsic minimum")
+        );
+    }
+    #[test]
+    fn refuses_exhausted_space() {
+        let tracks = AcirGridTrackList {
+            columns: vec![AcirGridTrack::Auto, AcirGridTrack::FractionMilli(1000)],
+        };
+        let sizes = [
+            IntrinsicMeasurement::measured(50.0, 180.0),
+            IntrinsicMeasurement::measured(15.0, 30.0),
+        ];
+        assert!(candidate_single_row_tracks(&tracks, &sizes, 100.0, 10.0).is_err());
     }
     #[test]
     fn missing_measurement_is_never_synthesized() {
