@@ -826,7 +826,7 @@ pub fn compile_pseudo_element_capability(
     };
     require_verified(translation_id)?;
     let base_selector = trimmed[..trimmed.len() - suffix.len()].trim().to_string();
-    if base_selector.is_empty() {
+    if base_selector.is_empty() && target == AcirPseudoElement::FirstLetter {
         return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
     }
     Ok(Some(CompiledPseudoElementCapability {
