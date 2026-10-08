@@ -12,7 +12,7 @@ use crate::capability_compiler::{
     compile_zero_length_capability,
 };
 use crate::capability_ir::{
-    AcirInteractionPredicate, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
+    AcirGeneratedContent, AcirInteractionPredicate, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
     AcirSelectorRelation, AcirStructuralPredicate, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
@@ -295,6 +295,7 @@ pub enum CssValue {
     Global(CssGlobalKeyword),
     Px(f32),
     RelativeLength(AcirRelativeLength),
+    GeneratedContent(AcirGeneratedContent),
     Var(String),
     Raw(String),
 }
@@ -764,6 +765,24 @@ fn parse_declarations_with_translations(
             }
         } else {
             match property.as_str() {
+                "content" => {
+                    if value == "none" || value == "normal" {
+                        Some(CssValue::GeneratedContent(AcirGeneratedContent::None))
+                    } else if value.len() >= 2
+                        && ((value.starts_with('"') && value.ends_with('"'))
+                            || (value.starts_with('\'') && value.ends_with('\'')))
+                        && !value[1..value.len() - 1].contains('\\')
+                    {
+                        Some(CssValue::GeneratedContent(AcirGeneratedContent::Literal(
+                            value[1..value.len() - 1].into(),
+                        )))
+                    } else {
+                        return Err(CssError::InvalidValue {
+                            property,
+                            value: value.into(),
+                        });
+                    }
+                }
                 "display" => match value {
                     "none" | "block" | "inline" | "inline-block" | "flex" | "inline-flex"
                     | "grid" | "inline-grid" | "table" | "inline-table" | "table-row"
