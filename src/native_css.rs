@@ -641,6 +641,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             attributes: Vec::new(),
             root: true,
             states: Vec::new(),
+            structural: Vec::new(),
             any_of: Vec::new(),
             where_any_of: Vec::new(),
             none_of: Vec::new(),
