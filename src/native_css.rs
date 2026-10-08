@@ -1324,6 +1324,18 @@ mod tests {
     }
 
     #[test]
+    fn generated_content_rejects_unverified_expressions() {
+        assert!(matches!(
+            parse_declarations("content: attr(title);"),
+            Err(CssError::InvalidValue { property, .. }) if property == "content"
+        ));
+        assert!(matches!(
+            parse_declarations("content: \"a\\\\b\";"),
+            Err(CssError::InvalidValue { property, .. }) if property == "content"
+        ));
+    }
+
+    #[test]
     fn bare_before_pseudo_compiles_as_universal_generated_target() {
         let selector = parse_selector(":before").unwrap();
         assert_eq!(selector.pseudo_element, Some(AcirPseudoElement::Before));
