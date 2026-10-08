@@ -572,6 +572,20 @@ mod tests {
     }
 
     #[test]
+    fn generated_content_does_not_silently_enter_flex_layout() {
+        let document = crate::native_html::parse_document(
+            "<html><body><div class=\"flex\">Hello</div></body></html>",
+        ).unwrap();
+        let sheet = crate::native_css::parse_stylesheet(
+            ".flex { display: flex; } .flex:before { content: \"X\"; }",
+        ).unwrap();
+        assert!(matches!(
+            layout_document_with_styles(&document, &sheet, 320.0),
+            Err(crate::native_css::CssError::UnsupportedLayout(_))
+        ));
+    }
+
+    #[test]
     fn generated_before_after_are_native_rendered_fragments() {
         let document = crate::native_html::parse_document(
             "<html><body><p class=\"notice\">Body</p></body></html>",
