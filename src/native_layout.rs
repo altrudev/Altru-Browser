@@ -7,7 +7,12 @@ use crate::native_css::StyleSheet;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
 use crate::native_layout_taffy::{GeometryChild, GeometryMode, GeometryRequest, solve_geometry};
 use crate::native_scene::{Scene, SceneCommand};
-use crate::native_style::{ComputedStyle, Display, FlexDirection, ResolvedStyle, resolve_styles};
+use crate::capability_ir::AcirPseudoElement;
+use crate::interaction_state::InteractionSnapshot;
+use crate::native_style::{
+    ComputedStyle, Display, FlexDirection, ResolvedStyle, resolve_pseudo_style_for_element,
+    resolve_styles,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutFragment {
@@ -25,6 +30,56 @@ pub struct LayoutTree {
     pub fragments: Vec<LayoutFragment>,
     pub content_height: f32,
     pub epoch: u64,
+}
+
+fn first_text_descendant(document: &NativeDocument, node: NodeId) -> Option<NodeId> {
+    let candidate = document.node(node)?;
+    for child in &candidate.children {
+        let child_node = document.node(*child)?;
+        match &child_node.kind {
+            NodeKind::Text(text) if !text.trim().is_empty() => return Some(*child),
+            NodeKind::Element { .. } => {
+                if let Some(found) = first_text_descendant(document, *child) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn first_letter_sizes(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    sheet: &StyleSheet,
+) -> Result<Vec<Option<f32>>, crate::native_css::CssError> {
+    let mut result = vec![None; document.nodes().len()];
+    let interaction = InteractionSnapshot::default();
+
+    for node in document.nodes() {
+        if !matches!(node.kind, NodeKind::Element { .. }) {
+            continue;
+        }
+        let Some(text_node) = first_text_descendant(document, node.id) else {
+            continue;
+        };
+        let Some(base_style) = styles.get(node.id) else {
+            continue;
+        };
+        if let Some(pseudo) = resolve_pseudo_style_for_element(
+            document,
+            node.id,
+            base_style,
+            sheet,
+            &interaction,
+            AcirPseudoElement::FirstLetter,
+        )? {
+            result[text_node] = Some(pseudo.computed.font_size_px);
+        }
+    }
+
+    Ok(result)
 }
 
 fn estimate_subtree_height(
@@ -132,6 +187,7 @@ fn table_rows(
 fn layout_node(
     document: &NativeDocument,
     styles: &[ResolvedStyle],
+    first_letter_sizes: &[Option<f32>],
     node: NodeId,
     x: f32,
     width: f32,
@@ -153,21 +209,71 @@ fn layout_node(
     match &candidate.kind {
         NodeKind::Document => {
             for child in &candidate.children {
-                layout_node(document, styles, *child, x, width, y, fragments)?;
+                layout_node(document, styles, first_letter_sizes, *child, x, width, y, fragments)?;
             }
         }
         NodeKind::Text(text) => {
-            let line_height = (style.font_size_px * 1.35).ceil();
-            fragments.push(LayoutFragment {
-                node,
-                x,
-                y: *y,
-                width: width.max(1.0),
-                height: line_height,
-                font_size_px: style.font_size_px,
-                text: Some(text.clone()),
-            });
-            *y += line_height;
+            let base_line_height = (style.font_size_px * 1.35).ceil();
+            if let Some(first_size) = first_letter_sizes.get(node).copied().flatten() {
+                if let Some((byte_index, ch)) = text.char_indices().find(|(_, ch)| !ch.is_whitespace()) {
+                    let ch_len = ch.len_utf8();
+                    let before = &text[..byte_index];
+                    let first = &text[byte_index..byte_index + ch_len];
+                    let after = &text[byte_index + ch_len..];
+                    let first_width = (first_size * 0.62).max(1.0);
+                    let first_line_height = (first_size * 1.35).ceil();
+                    let line_height = base_line_height.max(first_line_height);
+
+                    if !before.is_empty() {
+                        fragments.push(LayoutFragment {
+                            node,
+                            x,
+                            y: *y,
+                            width: width.max(1.0),
+                            height: line_height,
+                            font_size_px: style.font_size_px,
+                            text: Some(before.to_string()),
+                        });
+                    }
+
+                    fragments.push(LayoutFragment {
+                        node,
+                        x,
+                        y: *y,
+                        width: first_width,
+                        height: line_height,
+                        font_size_px: first_size,
+                        text: Some(first.to_string()),
+                    });
+
+                    if !after.is_empty() {
+                        fragments.push(LayoutFragment {
+                            node,
+                            x: x + first_width,
+                            y: *y,
+                            width: (width - first_width).max(1.0),
+                            height: line_height,
+                            font_size_px: style.font_size_px,
+                            text: Some(after.to_string()),
+                        });
+                    }
+
+                    *y += line_height;
+                } else {
+                    *y += base_line_height;
+                }
+            } else {
+                fragments.push(LayoutFragment {
+                    node,
+                    x,
+                    y: *y,
+                    width: width.max(1.0),
+                    height: base_line_height,
+                    font_size_px: style.font_size_px,
+                    text: Some(text.clone()),
+                });
+                *y += base_line_height;
+            }
         }
         NodeKind::Element { .. }
             if matches!(style.display, Display::Table | Display::InlineTable) =>
@@ -188,6 +294,7 @@ fn layout_node(
                     layout_node(
                         document,
                         styles,
+                        first_letter_sizes,
                         *cell,
                         child_x + cell_width * index as f32,
                         cell_width.max(1.0),
@@ -251,6 +358,7 @@ fn layout_node(
                 layout_node(
                     document,
                     styles,
+                    first_letter_sizes,
                     *child,
                     child_x + geometry_box.x,
                     geometry_box.width.max(1.0),
@@ -274,7 +382,7 @@ fn layout_node(
             let child_width = (width - style.padding_left_px - style.padding_right_px).max(1.0);
 
             for child in &candidate.children {
-                layout_node(document, styles, *child, child_x, child_width, y, fragments)?;
+                layout_node(document, styles, first_letter_sizes, *child, child_x, child_width, y, fragments)?;
             }
 
             if block {
@@ -292,12 +400,14 @@ pub fn layout_document_with_styles(
 ) -> Result<LayoutTree, crate::native_css::CssError> {
     let width = viewport_width.max(1.0);
     let styles = resolve_styles(document, sheet)?;
+    let first_letter_sizes = first_letter_sizes(document, &styles, sheet)?;
     let mut y = 16.0f32;
     let mut fragments = Vec::new();
 
     layout_node(
         document,
         &styles,
+        &first_letter_sizes,
         document.root(),
         16.0,
         (width - 32.0).max(1.0),
@@ -360,6 +470,22 @@ mod tests {
         let sheet = parse_stylesheet(".lead { font-size: 22px; }").unwrap();
         let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
         assert_eq!(layout.fragments[0].font_size_px, 22.0);
+    }
+
+    #[test]
+    fn first_letter_rule_splits_rendered_text_fragment() {
+        let document =
+            parse_document("<html><body><p class=\"drop\">Hello</p></body></html>").unwrap();
+        let sheet = parse_stylesheet(
+            ".drop { font-size: 20px; } .drop:first-letter { font-size: 40px; }",
+        )
+        .unwrap();
+        let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
+        assert!(layout.fragments.len() >= 2);
+        assert_eq!(layout.fragments[0].text.as_deref(), Some("H"));
+        assert_eq!(layout.fragments[0].font_size_px, 40.0);
+        assert_eq!(layout.fragments[1].text.as_deref(), Some("ello"));
+        assert_eq!(layout.fragments[1].font_size_px, 20.0);
     }
 
     #[test]

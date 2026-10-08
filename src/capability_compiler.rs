@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirRelativeLength,
+    AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirPseudoElement, AcirRelativeLength,
     AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirStructuralPredicate,
     AcirSupportCondition, CapabilityEnvironment,
 };
@@ -18,6 +18,7 @@ pub const CSS_SELECTOR_RELATIONS_V1: &str = "css.selector-relations.v1";
 pub const CSS_SELECTOR_INTERACTION_V1: &str = "css.selector-interaction-state.v1";
 pub const CSS_SELECTOR_BOOLEAN_V1: &str = "css.selector-boolean.v1";
 pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
+pub const CSS_PSEUDO_FIRST_LETTER_V1: &str = "css.pseudo-first-letter.v1";
 pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
@@ -72,6 +73,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_SELECTOR_LIST_V1,
         source_family: "css-selector-list",
         target_semantics: "native.rule-expansion",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_PSEUDO_FIRST_LETTER_V1,
+        source_family: "css-pseudo-first-letter",
+        target_semantics: "acir.pseudo-element.first-letter",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -158,6 +165,13 @@ pub struct CompiledSelectorBooleanCapability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledSelectorListCapability {
     pub selectors: Vec<String>,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledPseudoElementCapability {
+    pub base_selector: String,
+    pub target: AcirPseudoElement,
     pub receipt: TranslationReceipt,
 }
 
@@ -777,6 +791,35 @@ pub fn compile_selector_boolean_capability(
         operation,
         receipt: TranslationReceipt {
             translation_id: CSS_SELECTOR_BOOLEAN_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+pub fn compile_pseudo_element_capability(
+    input: &str,
+) -> Result<Option<CompiledPseudoElementCapability>, CapabilityCompilerError> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let suffix = if lower.ends_with("::first-letter") {
+        Some("::first-letter")
+    } else if lower.ends_with(":first-letter") {
+        Some(":first-letter")
+    } else {
+        None
+    };
+    let Some(suffix) = suffix else { return Ok(None); };
+    require_verified(CSS_PSEUDO_FIRST_LETTER_V1)?;
+    let base_selector = trimmed[..trimmed.len() - suffix.len()].trim().to_string();
+    if base_selector.is_empty() {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+    Ok(Some(CompiledPseudoElementCapability {
+        base_selector,
+        target: AcirPseudoElement::FirstLetter,
+        receipt: TranslationReceipt {
+            translation_id: CSS_PSEUDO_FIRST_LETTER_V1.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
@@ -1642,6 +1685,14 @@ mod tests {
         );
 
         assert!(compile_selector_structural_capability("li:nth-child(2n+1)").is_err());
+    }
+
+    #[test]
+    fn first_letter_pseudo_compiles_to_fragment_target() {
+        let compiled = compile_pseudo_element_capability(".drop:first-letter").unwrap().unwrap();
+        assert_eq!(compiled.base_selector, ".drop");
+        assert_eq!(compiled.target, AcirPseudoElement::FirstLetter);
+        assert_eq!(compiled.receipt.translation_id, CSS_PSEUDO_FIRST_LETTER_V1);
     }
 
     #[test]

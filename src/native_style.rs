@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::capability_ir::AcirPseudoElement;
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_css::{
     CssError, CssGlobalKeyword, CssValue, Declaration, StyleSheet, parse_declarations,
@@ -325,8 +326,10 @@ fn resolve_element_style(
         .rules
         .iter()
         .filter(|rule| {
-            rule.selector
-                .matches_with_interaction(document, node, interaction)
+            rule.selector.pseudo_element.is_none()
+                && rule
+                    .selector
+                    .matches_with_interaction(document, node, interaction)
         })
         .collect::<Vec<_>>();
     matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
@@ -387,6 +390,62 @@ fn resolve_element_style(
         computed,
         custom_properties,
     })
+}
+
+pub fn resolve_pseudo_style_for_element(
+    document: &NativeDocument,
+    node: NodeId,
+    base_style: &ResolvedStyle,
+    sheet: &StyleSheet,
+    interaction: &InteractionSnapshot,
+    target: AcirPseudoElement,
+) -> Result<Option<ResolvedStyle>, CssError> {
+    let mut matching = sheet
+        .rules
+        .iter()
+        .filter(|rule| {
+            rule.selector.pseudo_element == Some(target)
+                && rule
+                    .selector
+                    .matches_with_interaction(document, node, interaction)
+        })
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        return Ok(None);
+    }
+
+    matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+    let mut computed = base_style.computed;
+    let mut custom_properties = base_style.custom_properties.clone();
+
+    for rule in matching {
+        for declaration in &rule.declarations {
+            if declaration.property.starts_with("--") {
+                if let CssValue::Raw(value) = &declaration.value {
+                    custom_properties.insert(declaration.property.clone(), value.clone());
+                }
+                continue;
+            }
+            let value = resolve_value(
+                declaration,
+                &custom_properties,
+                base_style.computed.font_size_px,
+                computed.font_size_px,
+            )?;
+            apply_value(
+                &mut computed,
+                &base_style.computed,
+                &declaration.property,
+                &value,
+            );
+        }
+    }
+
+    Ok(Some(ResolvedStyle {
+        computed,
+        custom_properties,
+    }))
 }
 
 pub fn resolve_styles_with_interaction(
@@ -520,6 +579,35 @@ mod tests {
         assert_eq!(matched[1].1, Display::InlineFlex);
         assert_eq!(matched[2].1, Display::InlineGrid);
         assert!(matched.iter().all(|(_, display)| display.is_outer_inline()));
+    }
+
+    #[test]
+    fn pseudo_fragment_rule_does_not_style_whole_element() {
+        let document =
+            parse_document("<html><body><p class=\"drop\">Hello</p></body></html>").unwrap();
+        let sheet = parse_stylesheet(
+            ".drop { font-size: 20px; } .drop:first-letter { font-size: 40px; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let paragraph = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
+            .unwrap();
+        assert_eq!(styles[paragraph.id].computed.font_size_px, 20.0);
+
+        let pseudo = resolve_pseudo_style_for_element(
+            &document,
+            paragraph.id,
+            &styles[paragraph.id],
+            &sheet,
+            &InteractionSnapshot::default(),
+            AcirPseudoElement::FirstLetter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(pseudo.computed.font_size_px, 40.0);
     }
 
     #[test]

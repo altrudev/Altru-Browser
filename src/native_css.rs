@@ -5,15 +5,15 @@
 
 use crate::capability_compiler::{
     CapabilityCompilerError, TranslationReceipt, compile_current_font_length_capability,
-    compile_font_size_capability,
+    compile_font_size_capability, compile_pseudo_element_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
     compile_selector_structural_capability, compile_stylesheet_capabilities,
     compile_zero_length_capability,
 };
 use crate::capability_ir::{
-    AcirInteractionPredicate, AcirRelativeLength, AcirSelectorBoolean, AcirSelectorRelation,
-    AcirStructuralPredicate, CapabilityEnvironment,
+    AcirInteractionPredicate, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
+    AcirSelectorRelation, AcirStructuralPredicate, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
@@ -62,6 +62,7 @@ pub struct Selector {
     pub root: bool,
     pub states: Vec<AcirInteractionPredicate>,
     pub structural: Vec<AcirStructuralPredicate>,
+    pub pseudo_element: Option<AcirPseudoElement>,
     pub any_of: Vec<Selector>,
     pub where_any_of: Vec<Selector>,
     pub none_of: Vec<Selector>,
@@ -78,7 +79,7 @@ impl Selector {
                 + self.structural.len()
                 + usize::from(self.root))
                 .min(u16::MAX as usize) as u16,
-            u16::from(self.tag.is_some()),
+            (u16::from(self.tag.is_some()) + u16::from(self.pseudo_element.is_some())),
         );
         let any_nested = self
             .any_of
@@ -444,6 +445,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         root: false,
         states: Vec::new(),
         structural: Vec::new(),
+        pseudo_element: None,
         any_of: Vec::new(),
         where_any_of: Vec::new(),
         none_of: Vec::new(),
@@ -554,6 +556,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 root: false,
                 states: Vec::new(),
                 structural: Vec::new(),
+                pseudo_element: None,
                 any_of: Vec::new(),
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
@@ -575,6 +578,19 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         return Ok(selector);
     }
 
+    let compiled_pseudo = match compile_pseudo_element_capability(input) {
+        Ok(compiled) => compiled,
+        Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
+            return Err(CssError::UnsupportedSelector(input.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(compiled) = compiled_pseudo {
+        let mut selector = parse_selector(&compiled.base_selector)?;
+        selector.pseudo_element = Some(compiled.target);
+        return Ok(selector);
+    }
+
     let compiled_state = match compile_selector_state_capability(input) {
         Ok(compiled) => compiled,
         Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
@@ -592,6 +608,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 root: false,
                 states: Vec::new(),
                 structural: Vec::new(),
+                pseudo_element: None,
                 any_of: Vec::new(),
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
@@ -621,6 +638,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 root: false,
                 states: Vec::new(),
                 structural: Vec::new(),
+                pseudo_element: None,
                 any_of: Vec::new(),
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
@@ -642,6 +660,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             root: true,
             states: Vec::new(),
             structural: Vec::new(),
+            pseudo_element: None,
             any_of: Vec::new(),
             where_any_of: Vec::new(),
             none_of: Vec::new(),
@@ -1220,6 +1239,13 @@ mod tests {
             parse_stylesheet("li:nth-child(2n+1) { margin-bottom: 0; }"),
             Err(CssError::UnsupportedSelector(_))
         ));
+    }
+
+    #[test]
+    fn first_letter_pseudo_is_fragment_target_not_element_style() {
+        let selector = parse_selector(".has-drop-cap:first-letter").unwrap();
+        assert_eq!(selector.pseudo_element, Some(AcirPseudoElement::FirstLetter));
+        assert_eq!(selector.specificity(), (0, 1, 1));
     }
 
     #[test]
