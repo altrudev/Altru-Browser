@@ -98,6 +98,12 @@ pub struct ResolvedStyle {
     pub custom_properties: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedGeneratedPseudo {
+    pub computed: ComputedStyle,
+    pub content: String,
+}
+
 impl ResolvedStyle {
     fn initial() -> Self {
         Self {
@@ -448,6 +454,79 @@ pub fn resolve_pseudo_style_for_element(
     }))
 }
 
+pub fn resolve_generated_pseudo_for_element(
+    document: &NativeDocument,
+    node: NodeId,
+    base_style: &ResolvedStyle,
+    sheet: &StyleSheet,
+    interaction: &InteractionSnapshot,
+    target: AcirPseudoElement,
+) -> Result<Option<ResolvedGeneratedPseudo>, CssError> {
+    if !matches!(target, AcirPseudoElement::Before | AcirPseudoElement::After) {
+        return Ok(None);
+    }
+
+    let mut matching = sheet
+        .rules
+        .iter()
+        .filter(|rule| {
+            rule.selector.pseudo_element == Some(target)
+                && rule
+                    .selector
+                    .matches_with_interaction(document, node, interaction)
+        })
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        return Ok(None);
+    }
+
+    matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+    let mut computed = base_style.computed;
+    let mut custom_properties = base_style.custom_properties.clone();
+    let mut content: Option<String> = None;
+
+    for rule in matching {
+        for declaration in &rule.declarations {
+            if declaration.property.starts_with("--") {
+                if let CssValue::Raw(value) = &declaration.value {
+                    custom_properties.insert(declaration.property.clone(), value.clone());
+                }
+                continue;
+            }
+
+            if declaration.property == "content" {
+                match &declaration.value {
+                    CssValue::Content(value) => content = value.clone(),
+                    CssValue::UnsupportedContent(value) => {
+                        return Err(CssError::InvalidValue {
+                            property: "content".into(),
+                            value: value.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            let value = resolve_value(
+                declaration,
+                &custom_properties,
+                base_style.computed.font_size_px,
+                computed.font_size_px,
+            )?;
+            apply_value(
+                &mut computed,
+                &base_style.computed,
+                &declaration.property,
+                &value,
+            );
+        }
+    }
+
+    Ok(content.map(|content| ResolvedGeneratedPseudo { computed, content }))
+}
+
 pub fn resolve_styles_with_interaction(
     document: &NativeDocument,
     sheet: &StyleSheet,
@@ -579,6 +658,59 @@ mod tests {
         assert_eq!(matched[1].1, Display::InlineFlex);
         assert_eq!(matched[2].1, Display::InlineGrid);
         assert!(matched.iter().all(|(_, display)| display.is_outer_inline()));
+    }
+
+    #[test]
+    fn generated_before_content_resolves_separately_from_host() {
+        let document =
+            parse_document("<html><body><p class=\"card\">Body</p></body></html>").unwrap();
+        let sheet = parse_stylesheet(
+            ".card { font-size: 20px; } .card:before { content: \"Hi \"; font-size: 24px; }",
+        )
+        .unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let paragraph = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
+            .unwrap();
+
+        assert_eq!(styles[paragraph.id].computed.font_size_px, 20.0);
+        let generated = resolve_generated_pseudo_for_element(
+            &document,
+            paragraph.id,
+            &styles[paragraph.id],
+            &sheet,
+            &InteractionSnapshot::default(),
+            AcirPseudoElement::Before,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(generated.content, "Hi ");
+        assert_eq!(generated.computed.font_size_px, 24.0);
+    }
+
+    #[test]
+    fn generated_content_none_does_not_create_fragment() {
+        let document =
+            parse_document("<html><body><p class=\"card\">Body</p></body></html>").unwrap();
+        let sheet = parse_stylesheet(".card:after { content: none; }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let paragraph = document
+            .nodes()
+            .iter()
+            .find(|node| matches!(&node.kind, NodeKind::Element { tag } if tag == "p"))
+            .unwrap();
+        assert!(resolve_generated_pseudo_for_element(
+            &document,
+            paragraph.id,
+            &styles[paragraph.id],
+            &sheet,
+            &InteractionSnapshot::default(),
+            AcirPseudoElement::After,
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

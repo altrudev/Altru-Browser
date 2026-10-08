@@ -67,6 +67,8 @@ impl AcirStructuralPredicate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcirPseudoElement {
     FirstLetter,
+    Before,
+    After,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
