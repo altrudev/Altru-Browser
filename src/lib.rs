@@ -9,6 +9,7 @@ pub mod governor;
 pub mod html_canonical_data;
 pub mod intrinsic_measurement;
 pub mod intrinsic_text;
+pub mod intrinsic_grid;
 pub mod interaction_state;
 pub mod light;
 pub mod metrics;
