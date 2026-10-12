@@ -1734,6 +1734,13 @@ mod tests {
         let rules = parse_stylesheet(".nav::-webkit-scrollbar, p { display:block; }").unwrap().rules;
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].selector.tag.as_deref(), Some("p"));
+        for suffix in ["scrollbar-thumb", "scrollbar-track", "scrollbar-corner", "file-upload-button", "future-part"] {
+            let css = format!(".nav::-webkit-{suffix} {{ display:none; }} p {{ display:block; }}");
+            assert_eq!(parse_stylesheet(&css).unwrap().rules.len(), 1);
+        }
+        for unsupported in [".nav::-webkit-part() { display:none; }", ".nav::-moz-range-thumb { display:none; }"] {
+            assert!(parse_stylesheet(unsupported).is_err());
+        }
     }
 
     #[test]
