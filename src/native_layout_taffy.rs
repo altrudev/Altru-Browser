@@ -299,9 +299,14 @@ mod enabled {
 }
 
 #[cfg(feature = "taffy-layout")]
-pub use enabled::solve_geometry;
+pub use enabled::{solve_geometry, solve_candidate_mixed_grid};
 
 #[cfg(not(feature = "taffy-layout"))]
 pub fn solve_geometry(_: &GeometryRequest) -> Result<GeometryResult, String> {
     Err("flex/grid geometry adapter is not enabled".into())
+}
+
+#[cfg(not(feature = "taffy-layout"))]
+pub fn solve_candidate_mixed_grid(_: &crate::capability_ir::AcirGridTrackList, _: &[crate::intrinsic_measurement::IntrinsicMeasurement], _: f32, _: f32, _: f32) -> Result<GeometryResult, String> {
+    Err("mixed-grid geometry adapter is not enabled".into())
 }
