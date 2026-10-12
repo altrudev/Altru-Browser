@@ -460,6 +460,8 @@ fn layout_node(
                 match style.flex_direction {
                     FlexDirection::Row => GeometryMode::FlexRow,
                     FlexDirection::Column => GeometryMode::FlexColumn,
+                    FlexDirection::RowReverse => GeometryMode::FlexRowReverse,
+                    FlexDirection::ColumnReverse => GeometryMode::FlexColumnReverse,
                 }
             } else if style.display.is_grid_context() {
                 // H3 safety boundary: geometry request still models equal fractions only.

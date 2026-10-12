@@ -57,6 +57,8 @@ impl Display {
 pub enum FlexDirection {
     Row,
     Column,
+    RowReverse,
+    ColumnReverse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -298,6 +300,8 @@ fn apply_value(
         ("flex-direction", CssValue::Keyword(value)) => {
             style.flex_direction = match value.as_str() {
                 "column" => FlexDirection::Column,
+                "row-reverse" => FlexDirection::RowReverse,
+                "column-reverse" => FlexDirection::ColumnReverse,
                 _ => FlexDirection::Row,
             };
         }

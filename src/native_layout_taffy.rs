@@ -8,6 +8,8 @@
 pub enum GeometryMode {
     FlexRow,
     FlexColumn,
+    FlexRowReverse,
+    FlexColumnReverse,
     Grid { columns: u16 },
 }
 
@@ -96,6 +98,14 @@ mod enabled {
             GeometryMode::FlexColumn => {
                 style.display = taffy::style::Display::Flex;
                 style.flex_direction = taffy::style::FlexDirection::Column;
+            }
+            GeometryMode::FlexRowReverse => {
+                style.display = taffy::style::Display::Flex;
+                style.flex_direction = taffy::style::FlexDirection::RowReverse;
+            }
+            GeometryMode::FlexColumnReverse => {
+                style.display = taffy::style::Display::Flex;
+                style.flex_direction = taffy::style::FlexDirection::ColumnReverse;
             }
             GeometryMode::Grid { columns } => {
                 if columns == 0 || columns > 12 {
@@ -229,6 +239,30 @@ mod enabled {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn reverse_flex_changes_visual_order_without_reordering_children() {
+            for (normal, reverse, horizontal) in [
+                (GeometryMode::FlexRow, GeometryMode::FlexRowReverse, true),
+                (GeometryMode::FlexColumn, GeometryMode::FlexColumnReverse, false),
+            ] {
+                let mk = |mode| GeometryRequest {
+                    mode, width: 300.0, gap: 10.0,
+                    children: vec![
+                        GeometryChild { min_height: 18.0 },
+                        GeometryChild { min_height: 35.0 },
+                        GeometryChild { min_height: 24.0 },
+                    ],
+                };
+                let a = solve_geometry(&mk(normal)).unwrap();
+                let b = solve_geometry(&mk(reverse)).unwrap();
+                assert_eq!(a.children.len(), 3);
+                assert_eq!(b.children.len(), 3);
+                let pos = |r: &GeometryResult, i: usize| if horizontal { r.children[i].x } else { r.children[i].y };
+                assert!(pos(&a, 0) < pos(&a, 2));
+                assert!(pos(&b, 0) > pos(&b, 2));
+            }
+        }
 
         #[test]
         fn candidate_track_order_survives_taffy() {

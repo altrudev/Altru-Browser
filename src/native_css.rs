@@ -820,7 +820,7 @@ fn parse_declarations_with_translations(
                     }
                 },
                 "flex-direction" => match value {
-                    "row" | "column" => Some(CssValue::Keyword(value.into())),
+                    "row" | "column" | "row-reverse" | "column-reverse" => Some(CssValue::Keyword(value.into())),
                     _ => {
                         return Err(CssError::InvalidValue {
                             property,
@@ -1750,6 +1750,11 @@ mod tests {
         assert!(matches!(flex[0].value, CssValue::Display(ref value) if value == "flex"));
         assert!(matches!(flex[1].value, CssValue::Keyword(ref value) if value == "column"));
         assert!(matches!(flex[2].value, CssValue::Px(value) if value == 12.0));
+
+        for direction in ["row-reverse", "column-reverse"] {
+            let declarations = parse_declarations(&format!("flex-direction: {direction};")).unwrap();
+            assert!(matches!(&declarations[0].value, CssValue::Keyword(actual) if actual == direction));
+        }
 
         let grid =
             parse_declarations("display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;")

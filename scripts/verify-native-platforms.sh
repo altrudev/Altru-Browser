@@ -11,6 +11,8 @@ TARGETS=(
 
 cd "$ROOT"
 
+# Always execute deterministic compatibility regressions before release checks.
+"$ROOT/scripts/verify-edge-compatibility.sh"
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test native_
