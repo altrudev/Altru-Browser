@@ -5,3 +5,5 @@ Run `chromium --headless --no-sandbox --disable-gpu --dump-dom file://$PWD/fixtu
 Run Chromium reference gate: `python3 fixtures/grid-differential/verify_reference.py` (JSON to stdout).
 Run negative validation: `python3 -m unittest discover -s fixtures/grid-differential -p test_verify_reference.py -v`.
 This verifies Chromium reference consistency only, not Altru equivalence, live CNET, or H3 integration.
+
+Candidate differential (matched font): `ALTRU_TEST_FONT=/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf python3 fixtures/grid-differential/compare_native.py`. Runs three native Taffy candidate track cases and independent Chromium web-font geometry; rejects deviations >1.05px. This does not prove native scene rendering, script compatibility or live CNET support.

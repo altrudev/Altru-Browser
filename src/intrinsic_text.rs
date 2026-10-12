@@ -36,7 +36,19 @@ pub fn measure_ascii_text(
     let Ok(font) = FontRef::try_from_slice(font_bytes) else {
         return IntrinsicMeasurement::Unknown(UnknownMeasurement::FontMetricsUnavailable);
     };
-    let scaled = font.as_scaled(PxScale::from(font_size_px));
+    // CSS font-size is an em square, whereas ab_glyph PxScale is
+    // normalized to ascent minus descent. Convert using font metrics.
+    let Some(units_per_em) = font.units_per_em() else {
+        return IntrinsicMeasurement::Unknown(UnknownMeasurement::FontMetricsUnavailable);
+    };
+    if !units_per_em.is_finite() || units_per_em <= 0.0 {
+        return IntrinsicMeasurement::Unknown(UnknownMeasurement::FontMetricsUnavailable);
+    }
+    let css_scale_height = font_size_px * font.height_unscaled() / units_per_em;
+    if !css_scale_height.is_finite() || css_scale_height <= 0.0 {
+        return IntrinsicMeasurement::Unknown(UnknownMeasurement::FontMetricsUnavailable);
+    }
+    let scaled = font.as_scaled(PxScale::from(css_scale_height));
     let mut max_line = 0.0_f32;
     let mut line_width = 0.0_f32;
     let mut max_word = 0.0_f32;

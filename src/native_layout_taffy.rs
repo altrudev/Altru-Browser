@@ -252,6 +252,22 @@ mod enabled {
             assert_eq!(result_b.children[1].x, 50.0);
         }
         #[test]
+        fn h4_emit_resolved_font_track_geometry() {
+            use crate::capability_ir::{AcirGridTrack, AcirGridTrackList};
+            let Ok(path) = std::env::var("ALTRU_TEST_FONT") else { return };
+            let font = std::fs::read(path).unwrap();
+            let measured = ["aaa", "bbbbbbbb"].map(|value|
+                crate::intrinsic_text::measure_ascii_text(&font, 16.0, value));
+            for (name, columns) in [
+                ("fr-auto", vec![AcirGridTrack::FractionMilli(1000), AcirGridTrack::Auto]),
+                ("auto-fr", vec![AcirGridTrack::Auto, AcirGridTrack::FractionMilli(1000)]),
+                ("fr-fr", vec![AcirGridTrack::FractionMilli(1000), AcirGridTrack::FractionMilli(1000)]),
+            ] {
+                let result = solve_candidate_mixed_grid(&AcirGridTrackList { columns }, &measured, 300.0, 10.0, 24.0).unwrap();
+                println!("H4_NATIVE {name} {} {} {} {}", result.children[0].x, result.children[0].width, result.children[1].x, result.children[1].width);
+            }
+        }
+        #[test]
         fn candidate_unknown_measurement_fails_closed() {
             use crate::capability_ir::{AcirGridTrack, AcirGridTrackList};
             use crate::intrinsic_measurement::{IntrinsicMeasurement, UnknownMeasurement};
