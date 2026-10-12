@@ -412,6 +412,14 @@ fn layout_node(
                     FlexDirection::Column => GeometryMode::FlexColumn,
                 }
             } else if style.display.is_grid_context() {
+                // H3 safety boundary: geometry request still models equal fractions only.
+                // Do not silently lower Auto or weighted fractions to GridColumns.
+                let count = usize::from(style.grid_columns);
+                if count > 12 || style.grid_track_weights[..count].iter().any(|weight| *weight != 1000) {
+                    return Err(crate::native_css::CssError::UnsupportedLayout(
+                        "canonical mixed grid tracks require measured live H3 geometry".into()
+                    ));
+                }
                 GeometryMode::Grid {
                     columns: style.grid_columns,
                 }
@@ -689,6 +697,28 @@ mod tests {
         assert_eq!(layout.fragments.len(), 3);
         assert!(layout.fragments[1].x > layout.fragments[0].x);
         assert!(layout.fragments[2].y > layout.fragments[0].y);
+    }
+
+    #[test]
+    fn mixed_grid_semantics_reach_layout_and_fail_closed() {
+        let document = parse_document(
+            "<html><body><div class=\"grid\"><span>One</span><span>More words</span></div></body></html>",
+        ).unwrap();
+        for tracks in ["1fr auto", "auto 1fr", "2fr 1fr"] {
+            let sheet = parse_stylesheet(&format!(
+                ".grid {{ display: grid; grid-template-columns: {tracks}; gap: 10px; }}"
+            )).unwrap();
+            let styles = crate::native_style::resolve_styles(&document, &sheet).unwrap();
+            let grid = document.nodes().iter()
+                .find(|node| document.attribute(node.id, "class") == Some("grid"))
+                .unwrap();
+            assert_eq!(styles[grid.id].computed.grid_columns, 2);
+            assert!(styles[grid.id].computed.grid_track_weights[..2].iter().any(|weight| *weight != 1000));
+            assert!(matches!(
+                layout_document_with_styles(&document, &sheet, 320.0),
+                Err(crate::native_css::CssError::UnsupportedLayout(_))
+            ), "{tracks} must not be rendered as equal fractions");
+        }
     }
 
     #[cfg(not(feature = "taffy-layout"))]

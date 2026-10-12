@@ -5,14 +5,14 @@
 
 use crate::capability_compiler::{
     CapabilityCompilerError, TranslationReceipt, compile_current_font_length_capability,
-    compile_font_size_capability, compile_grid_track_capability, compile_pseudo_element_capability,
+    compile_font_size_capability, compile_grid_track_capability, compile_grid_track_syntax, compile_pseudo_element_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
     compile_selector_structural_capability, compile_stylesheet_capabilities,
     compile_zero_length_capability,
 };
 use crate::capability_ir::{
-    AcirInteractionPredicate, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
+    AcirGridTrackList, AcirInteractionPredicate, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
     AcirSelectorRelation, AcirStructuralPredicate, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
@@ -292,6 +292,7 @@ pub enum CssValue {
     Display(String),
     Keyword(String),
     GridColumns(u16),
+    GridTracks(AcirGridTrackList),
     Global(CssGlobalKeyword),
     Px(f32),
     RelativeLength(AcirRelativeLength),
@@ -811,17 +812,15 @@ fn parse_declarations_with_translations(
                         translations.push(compiled.receipt);
                         Some(CssValue::GridColumns(compiled.columns))
                     } else {
-                        let tracks = value.split_ascii_whitespace().collect::<Vec<_>>();
-                        if tracks.is_empty()
-                            || tracks.len() > 12
-                            || tracks.iter().any(|track| *track != "1fr")
-                        {
-                            return Err(CssError::InvalidValue {
-                                property,
-                                value: value.into(),
-                            });
+                        let compiled = compile_grid_track_syntax(value).map_err(|_| CssError::InvalidValue {
+                            property: property.clone(), value: value.into(),
+                        })?;
+                        translations.push(compiled.receipt);
+                        if compiled.tracks.columns.iter().all(|track| matches!(track, crate::capability_ir::AcirGridTrack::FractionMilli(1000))) {
+                            Some(CssValue::GridColumns(compiled.tracks.columns.len() as u16))
+                        } else {
+                            Some(CssValue::GridTracks(compiled.tracks))
                         }
-                        Some(CssValue::GridColumns(tracks.len() as u16))
                     }
                 }
                 "content" => {

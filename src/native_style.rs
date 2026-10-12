@@ -72,6 +72,8 @@ pub struct ComputedStyle {
     pub flex_direction: FlexDirection,
     pub gap_px: f32,
     pub grid_columns: u16,
+    /// Zero represents Auto; other values are positive fractional milliweights.
+    pub grid_track_weights: [u32; 12],
 }
 
 impl ComputedStyle {
@@ -88,6 +90,7 @@ impl ComputedStyle {
             flex_direction: FlexDirection::Row,
             gap_px: 0.0,
             grid_columns: 1,
+            grid_track_weights: [1000; 12],
         }
     }
 }
@@ -226,7 +229,7 @@ fn assign_property_from(
     match property {
         "display" => target.display = source.display,
         "flex-direction" => target.flex_direction = source.flex_direction,
-        "grid-template-columns" => target.grid_columns = source.grid_columns,
+        "grid-template-columns" => { target.grid_columns = source.grid_columns; target.grid_track_weights = source.grid_track_weights; },
         "gap" => target.gap_px = source.gap_px,
         "font-size" => target.font_size_px = source.font_size_px,
         "margin-top" => target.margin_before_px = source.margin_before_px,
@@ -298,7 +301,20 @@ fn apply_value(
                 _ => FlexDirection::Row,
             };
         }
-        ("grid-template-columns", CssValue::GridColumns(value)) => style.grid_columns = *value,
+        ("grid-template-columns", CssValue::GridColumns(value)) => {
+            style.grid_columns = *value;
+            style.grid_track_weights = [1000; 12];
+        }
+        ("grid-template-columns", CssValue::GridTracks(value)) => {
+            style.grid_columns = value.columns.len() as u16;
+            style.grid_track_weights = [1000; 12];
+            for (index, track) in value.columns.iter().enumerate() {
+                style.grid_track_weights[index] = match track {
+                    crate::capability_ir::AcirGridTrack::Auto => 0,
+                    crate::capability_ir::AcirGridTrack::FractionMilli(weight) => *weight,
+                };
+            }
+        },
         ("gap", CssValue::Px(value)) => style.gap_px = *value,
         ("font-size", CssValue::Px(value)) => style.font_size_px = *value,
         ("margin-top", CssValue::Px(value)) => style.margin_before_px = *value,
