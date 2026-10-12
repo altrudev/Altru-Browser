@@ -995,14 +995,6 @@ fn collect_selector_translation_receipts(
     Ok(())
 }
 
-/// Nonfunctional WebKit pseudo-elements have no native element target.
-fn inert_webkit_pseudo_element(selector: &str) -> bool {
-    let Some((base, name)) = selector.rsplit_once("::") else { return false };
-    if base.trim().is_empty() || !name.to_ascii_lowercase().starts_with("-webkit-") { return false; }
-    let suffix = &name["-webkit-".len()..];
-    !suffix.is_empty() && suffix.len() <= 64 && suffix.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-}
-
 fn parse_compiled_stylesheet(
     input: &str,
 ) -> Result<(StyleSheet, Vec<TranslationReceipt>), CssError> {
@@ -1035,7 +1027,13 @@ fn parse_compiled_stylesheet(
         translations.extend(declaration_translations);
 
         for selector_source in selectors {
-            if inert_webkit_pseudo_element(&selector_source) { continue; }
+            match crate::vendor_css::classify_selector(&selector_source).disposition {
+                crate::vendor_css::SelectorDisposition::InertWebKitPseudo => continue,
+                crate::vendor_css::SelectorDisposition::Unsupported => {
+                    return Err(CssError::UnsupportedSelector(selector_source));
+                }
+                crate::vendor_css::SelectorDisposition::NativeCandidate => {}
+            }
             collect_selector_translation_receipts(&selector_source, &mut translations)?;
             let selector = parse_selector(&selector_source)?;
             rules.push(Rule {

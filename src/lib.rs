@@ -15,6 +15,7 @@ pub mod light;
 pub mod metrics;
 pub mod model;
 pub mod native_css;
+pub mod vendor_css;
 pub mod native_dom;
 pub mod native_engine;
 pub mod native_html;
