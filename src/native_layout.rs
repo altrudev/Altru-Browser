@@ -798,7 +798,27 @@ mod tests {
         let bytes = std::fs::read(font_path).expect("font should be readable");
         let result = layout_document_with_styles_and_font(&document, &sheet, 320.0, Some(&bytes));
         assert!(result.is_ok(), "single-row measured geometry should agree with Taffy: {result:?}");
-        assert_eq!(result.unwrap().fragments.len(), 2);
+        let layout = result.unwrap();
+        assert_eq!(layout.fragments.len(), 2);
+        let a = &layout.fragments[0];
+        let b = &layout.fragments[1];
+        assert_eq!(a.text.as_deref(), Some("aaa"));
+        assert_eq!(b.text.as_deref(), Some("bbbbbbbb"));
+        assert!(a.x.is_finite() && b.x.is_finite() && b.x > a.x);
+        let scene = scene_from_layout(&layout);
+        assert_eq!(scene.commands.len(), 2);
+        match (&scene.commands[0], &scene.commands[1]) {
+            (
+                crate::native_scene::SceneCommand::Text { x: ax, text: at, .. },
+                crate::native_scene::SceneCommand::Text { x: bx, text: bt, .. },
+            ) => {
+                assert_eq!(at, "aaa");
+                assert_eq!(bt, "bbbbbbbb");
+                assert_eq!(*ax, a.x);
+                assert_eq!(*bx, b.x);
+            }
+            _ => panic!("expected two native text scene commands"),
+        }
     }
 
     #[cfg(not(feature = "taffy-layout"))]
