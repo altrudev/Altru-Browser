@@ -797,7 +797,8 @@ mod tests {
         let Ok(font_path) = std::env::var("ALTRU_TEST_FONT") else { return };
         let bytes = std::fs::read(font_path).expect("font should be readable");
         let result = layout_document_with_styles_and_font(&document, &sheet, 320.0, Some(&bytes));
-        assert!(matches!(result, Err(crate::native_css::CssError::UnsupportedLayout(ref why)) if why.contains("candidate/Taffy geometry disagrees")));
+        assert!(result.is_ok(), "single-row measured geometry should agree with Taffy: {result:?}");
+        assert_eq!(result.unwrap().fragments.len(), 2);
     }
 
     #[cfg(not(feature = "taffy-layout"))]

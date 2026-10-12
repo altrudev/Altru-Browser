@@ -202,10 +202,15 @@ mod enabled {
         for (index, node) in children.into_iter().enumerate() {
             let layout = tree.layout(node).map_err(|error| error.to_string())?;
             let expected = candidate.offsets_px[index];
-            if (layout.location.x - expected).abs() > 0.05
-                || (layout.size.width - candidate.widths_px[index]).abs() > 0.05
+            // Taffy snaps independently calculated CSS-pixel track edges to
+            // physical pixel boundaries. Compare those same snapped edges;
+            // do not relax the tolerance for genuinely incorrect geometry.
+            let snapped_start = expected.round();
+            let snapped_end = (expected + candidate.widths_px[index]).round();
+            if (layout.location.x - snapped_start).abs() > 0.05
+                || (layout.size.width - (snapped_end - snapped_start)).abs() > 0.05
             {
-                return Err("candidate/Taffy geometry disagrees".into());
+                return Err(format!("candidate/Taffy geometry disagrees: index={index}, expected_x={expected}, actual_x={}, expected_w={}, actual_w={}", layout.location.x, candidate.widths_px[index], layout.size.width));
             }
             boxes.push(GeometryBox {
                 x: layout.location.x,
