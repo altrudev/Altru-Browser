@@ -466,6 +466,11 @@ fn parse_resolution_milli_dpi(raw: &str) -> Result<u32, CapabilityCompilerError>
 
 fn parse_width_milli_px(raw: &str) -> Result<u32, CapabilityCompilerError> {
     let raw = raw.trim().to_ascii_lowercase();
+    // CSS permits unitless zero for length-valued media features.
+    // Nonzero unitless numbers remain unsupported.
+    if raw == "0" || raw == "0.0" {
+        return Ok(0);
+    }
     let Some(number) = raw.strip_suffix("px") else {
         return Err(CapabilityCompilerError::UnsupportedMediaQuery(raw));
     };
@@ -544,14 +549,24 @@ fn split_top_level_and(query: &str) -> Result<Vec<&str>, CapabilityCompilerError
             _ => {}
         }
 
-        if depth == 0
-            && index + 5 <= bytes.len()
-            && query[index..index + 5].eq_ignore_ascii_case(" and ")
+        // Accept compact CSS conjunctions at explicit token boundaries.
+        if depth == 0 && index + 3 <= bytes.len()
+            && bytes[index..index + 3].eq_ignore_ascii_case(b"and")
         {
-            parts.push(query[start..index].trim());
-            start = index + 5;
-            index += 5;
-            continue;
+            let left_ok = index > 0
+                && (bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b')');
+            let right_ok = index + 3 < bytes.len()
+                && (bytes[index + 3].is_ascii_whitespace() || bytes[index + 3] == b'(');
+            if left_ok && right_ok {
+                let part = query[start..index].trim();
+                if part.is_empty() {
+                    return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into()));
+                }
+                parts.push(part);
+                start = index + 3;
+                index += 3;
+                continue;
+            }
         }
         index += 1;
     }
@@ -1529,6 +1544,42 @@ mod tests {
             let compiled =
                 compile_stylesheet_capabilities(&css, CapabilityEnvironment::desktop(800)).unwrap();
             assert_eq!(compiled.receipts.len(), 1, "{query}");
+        }
+    }
+
+    #[test]
+    fn compact_media_and_requires_balanced_token_boundaries() {
+        let environment = CapabilityEnvironment::desktop(800);
+        for query in [
+            "(min-width:640px)and (max-width: 900px)",
+            "(min-width:640px)and(max-width:900px)",
+            "screen and(max-width:900px)",
+        ] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_ok(), "{query}");
+        }
+        for query in [
+            "(min-width:640px)and(max-width:900px",
+            "(min-width:640px)android(max-width:900px)",
+            "and(max-width:900px)",
+            "(min-width:640px)and",
+            "(min-width:640px))and(max-width:900px)",
+        ] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_err(), "{query}");
+        }
+    }
+
+    #[test]
+    fn media_width_accepts_only_unitless_zero() {
+        let environment = CapabilityEnvironment::desktop(800);
+        for query in ["(min-width:0)", "(max-width:0)", "(min-width:0.0)"] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_ok(), "{query}");
+        }
+        for query in ["(min-width:1)", "(max-width:639)", "(min-width:-1)"] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_err(), "{query}");
         }
     }
 
