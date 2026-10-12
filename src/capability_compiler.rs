@@ -21,6 +21,7 @@ pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_PSEUDO_FIRST_LETTER_V1: &str = "css.pseudo-first-letter.v1";
 pub const CSS_PSEUDO_GENERATED_V1: &str = "css.pseudo-generated.v1";
 pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural.v1";
+pub const CSS_SELECTOR_DIRECT_HAS_V1: &str = "css.selector-direct-has.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
@@ -94,6 +95,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_PSEUDO_GENERATED_V1,
         source_family: "css-pseudo-generated-content",
         target_semantics: "acir.pseudo-element.generated-fragment",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_SELECTOR_DIRECT_HAS_V1,
+        source_family: "css-selector-direct-has",
+        target_semantics: "native.direct-child-nth-last",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -1078,6 +1085,35 @@ pub fn compile_selector_structural_capability(
             decision: TranslationDecision::Admitted,
         },
     }))
+}
+
+/// Bounded, receipt-bearing direct-child :has relative selector subset.
+pub fn compile_direct_has_capability(input: &str) -> Result<Option<(String, u32, TranslationReceipt)>, CapabilityCompilerError> {
+    let Some((base, suffix)) = input.split_once(":has(") else { return Ok(None) };
+    if suffix.len() > 64 || !suffix.ends_with(')') || base.is_empty() || base.contains(":has(") {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+    let inner = suffix[..suffix.len() - 1].trim();
+    let Some(inner) = inner.strip_prefix('>').map(str::trim) else {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    };
+    let Some(inner) = inner.strip_prefix("*:nth-child(") else {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    };
+    let Some(digits) = inner.strip_suffix("):last-child") else {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    };
+    if digits.is_empty() || digits.len() > 2 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+    let nth = digits.parse::<u32>().map_err(|_| CapabilityCompilerError::UnsupportedSelector(input.into()))?;
+    if nth == 0 || nth > 12 { return Err(CapabilityCompilerError::UnsupportedSelector(input.into())); }
+    require_verified(CSS_SELECTOR_DIRECT_HAS_V1)?;
+    Ok(Some((base.to_owned(), nth, TranslationReceipt {
+        translation_id: CSS_SELECTOR_DIRECT_HAS_V1.into(),
+        source_sha256: sha256(input),
+        decision: TranslationDecision::Admitted,
+    })))
 }
 
 pub fn compile_selector_capability(

@@ -4,7 +4,7 @@
 //! closed; unknown properties follow CSS error handling and are ignored.
 
 use crate::capability_compiler::{
-    CapabilityCompilerError, TranslationReceipt, compile_current_font_length_capability,
+    CapabilityCompilerError, TranslationReceipt, compile_direct_has_capability, compile_current_font_length_capability,
     compile_font_size_capability, compile_grid_track_capability, compile_grid_track_syntax, compile_pseudo_element_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
@@ -67,6 +67,7 @@ pub struct Selector {
     pub where_any_of: Vec<Selector>,
     pub none_of: Vec<Selector>,
     pub ancestor: Option<(AcirSelectorRelation, Box<Selector>)>,
+    pub has_direct_child_nth_last: Option<u32>,
 }
 
 impl Selector {
@@ -77,7 +78,8 @@ impl Selector {
                 + self.attributes.len()
                 + self.states.len()
                 + self.structural.len()
-                + usize::from(self.root))
+                + usize::from(self.root)
+                + usize::from(self.has_direct_child_nth_last.is_some()))
                 .min(u16::MAX as usize) as u16,
             (u16::from(self.tag.is_some()) + u16::from(self.pseudo_element.is_some())),
         );
@@ -250,6 +252,13 @@ impl Selector {
                 .iter()
                 .any(|predicate| !predicate.matches(index, count))
             {
+                return false;
+            }
+        }
+
+        if let Some(nth) = self.has_direct_child_nth_last {
+            let children = document.element_children(node);
+            if children.len() != nth as usize {
                 return false;
             }
         }
@@ -484,6 +493,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         where_any_of: Vec::new(),
         none_of: Vec::new(),
         ancestor: None,
+        has_direct_child_nth_last: None,
     };
     let mut cursor = 0usize;
 
@@ -549,6 +559,12 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
 
+    if let Some((base, nth, _receipt)) = compile_direct_has_capability(input)? {
+        let mut selector = parse_selector(&base)?;
+        selector.has_direct_child_nth_last = Some(nth);
+        return Ok(selector);
+    }
+
     let compiled_selector = match compile_selector_capability(input) {
         Ok(compiled) => compiled,
         Err(CapabilityCompilerError::UnsupportedSelector(_)) => {
@@ -595,6 +611,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -634,6 +651,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -664,6 +682,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -694,6 +713,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -709,6 +729,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             classes: Vec::new(),
             attributes: Vec::new(),
             root: true,
+            has_direct_child_nth_last: None,
             states: Vec::new(),
             structural: Vec::new(),
             pseudo_element: None,
@@ -925,6 +946,11 @@ fn collect_selector_translation_receipts(
     selector_source: &str,
     translations: &mut Vec<TranslationReceipt>,
 ) -> Result<(), CssError> {
+    if let Some((base, _nth, receipt)) = compile_direct_has_capability(selector_source)? {
+        collect_selector_translation_receipts(&base, translations)?;
+        translations.push(receipt);
+        return Ok(());
+    }
     match compile_selector_capability(selector_source) {
         Ok(Some(compiled_selector)) => {
             for compound in &compiled_selector.chain.compounds {
@@ -1692,6 +1718,30 @@ mod tests {
         assert_eq!(declarations[0].property, "--text-size");
         assert!(matches!(declarations[0].value, CssValue::Raw(_)));
         assert!(matches!(declarations[1].value, CssValue::Var(_)));
+    }
+
+    #[test]
+    fn bounded_has_direct_child_nth_last_matches_exact_child_count() {
+        use crate::native_html::parse_document;
+        let selector = parse_selector(".grid:has(>*:nth-child(4):last-child)").unwrap();
+        let compiled = parse_stylesheet(".grid:has(>*:nth-child(4):last-child) { display: block; }").unwrap();
+        assert_eq!(compiled.rules.len(), 1);
+        assert_eq!(compiled.rules[0].selector, selector);
+        for (count, expected) in [(3, false), (4, true), (5, false)] {
+            let mut markup = String::from(r#"<html><body><div class="grid">"#);
+            for _ in 0..count { markup.push_str("<span>x</span>"); }
+            markup.push_str("</div></body></html>");
+            let document = parse_document(&markup).unwrap();
+            let node = document.nodes().iter()
+                .find(|n| document.attribute(n.id, "class") == Some("grid")).unwrap();
+            assert_eq!(selector.matches(&document, node.id), expected);
+        }
+        for bad in [
+            ".grid:has(>*:nth-child(4):first-child)",
+            ".grid:has(>*:nth-child(0):last-child)",
+            ".grid:has(>*:nth-child(99):last-child)",
+            ".grid:has(.x)",
+        ] { assert!(parse_selector(bad).is_err(), "{bad}"); }
     }
 
     #[test]
