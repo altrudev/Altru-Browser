@@ -309,6 +309,8 @@ pub enum CssValue {
     Content(Option<String>),
     UnsupportedContent(String),
     Var(String),
+    /// Canonical expression awaiting computed-value-time variable substitution.
+    DeferredLength(String),
     Raw(String),
 }
 
@@ -883,6 +885,8 @@ fn parse_declarations_with_translations(
                             });
                         }
                         Some(CssValue::Var(name.into()))
+                    } else if value.starts_with("calc(") && value.contains("var(") {
+                        Some(CssValue::DeferredLength(value.into()))
                     } else if let Some(receipt) = compile_zero_length_capability(value)? {
                         translations.push(receipt);
                         Some(CssValue::Px(0.0))
@@ -916,6 +920,8 @@ fn parse_declarations_with_translations(
                             });
                         }
                         Some(CssValue::Var(name.into()))
+                    } else if value.starts_with("calc(") && value.contains("var(") {
+                        Some(CssValue::DeferredLength(value.into()))
                     } else if let Some(receipt) = compile_zero_length_capability(value)? {
                         translations.push(receipt);
                         Some(CssValue::Px(0.0))

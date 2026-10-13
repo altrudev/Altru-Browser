@@ -259,11 +259,23 @@ fn resolve_value(
     root_font_size_px: f32,
 ) -> Result<CssValue, CssError> {
     match &declaration.value {
-        CssValue::Var(name) => {
+        CssValue::Var(name) | CssValue::DeferredLength(name) => {
+            let expression = if matches!(declaration.value, CssValue::Var(_)) {
+                format!("var({name})")
+            } else { name.clone() };
             let expanded = substitute_custom_value(
-                &format!("var({name})"), custom_properties, &mut Vec::new(),
+                &expression, custom_properties, &mut Vec::new(),
             )?;
             let expanded = expanded.trim();
+            if let Some(compiled) = crate::capability_compiler::compile_linear_length_capability(
+                expanded,
+                if declaration.property == "font-size" { crate::capability_ir::AcirLengthBasis::ParentFontSize }
+                else { crate::capability_ir::AcirLengthBasis::CurrentFontSize },
+            )? {
+                return Ok(CssValue::Px(compiled.value.resolve_px_with_root(
+                    parent_font_size_px, current_font_size_px, root_font_size_px,
+                )));
+            }
             if let Some(compiled) = crate::capability_compiler::compile_root_font_length_capability(expanded)? {
                 Ok(CssValue::Px(compiled.value.resolve_px_with_root(
                     parent_font_size_px, current_font_size_px, root_font_size_px,
@@ -300,7 +312,7 @@ fn resolve_computed_declaration(
 ) -> Result<CssValue, CssError> {
     match resolve_value(declaration, custom, parent_font, current_font, root_font) {
         Ok(value) => Ok(value),
-        Err(_) if matches!(declaration.value, CssValue::Var(_)) =>
+        Err(_) if matches!(declaration.value, CssValue::Var(_) | CssValue::DeferredLength(_)) =>
             Ok(CssValue::Global(CssGlobalKeyword::Unset)),
         Err(error) => Err(error),
     }
@@ -713,6 +725,17 @@ mod tests {
     use super::*;
     use crate::native_css::parse_stylesheet;
     use crate::native_html::parse_document;
+
+    #[test]
+    fn calc_with_nested_variables_resolves_through_canonical_length_path() {
+        let document = parse_document("<html><body><p class='x'>Length</p></body></html>").unwrap();
+        let css = "html { font-size: 20px; --size: 0.667em; --offset: 2px; } .x { font-size: 18px; padding-top: calc(var(--size) + var(--offset)); margin-top: calc(var(--missing, 1em) + 2px); }";
+        let sheet = parse_stylesheet(css).unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let node = document.nodes().iter().find(|n| document.attribute(n.id, "class") == Some("x")).unwrap();
+        assert!((styles[node.id].computed.padding_top_px - 14.006).abs() < 0.001);
+        assert!((styles[node.id].computed.margin_before_px - 20.0).abs() < 0.001);
+    }
 
     #[test]
     fn nested_custom_properties_fallback_cycles_and_limits() {
