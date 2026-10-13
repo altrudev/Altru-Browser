@@ -216,6 +216,21 @@ pub struct AcirRelativeLength {
     pub basis: AcirLengthBasis,
 }
 
+/// Bounded linear CSS calc: nonnegative font-relative factor plus pixel offset.
+/// Both operands use exact thousandths, never unchecked floating-point source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcirLinearLength {
+    pub font: AcirRelativeLength,
+    pub pixel_milli_offset: u32,
+}
+
+impl AcirLinearLength {
+    pub fn resolve_px(self, parent_font_size_px: f32, current_font_size_px: f32) -> f32 {
+        self.font.resolve_px(parent_font_size_px, current_font_size_px)
+            + self.pixel_milli_offset as f32 / 1_000.0
+    }
+}
+
 impl AcirRelativeLength {
     pub fn resolve_px(self, parent_font_size_px: f32, current_font_size_px: f32) -> f32 {
         let basis = match self.basis {

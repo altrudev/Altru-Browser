@@ -8,11 +8,11 @@ use crate::capability_compiler::{
     compile_font_size_capability, compile_grid_track_capability, compile_grid_track_syntax, compile_pseudo_element_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
-    compile_selector_structural_capability, compile_stylesheet_capabilities,
+    compile_selector_structural_capability, compile_stylesheet_capabilities, compile_linear_length_capability, compile_gap_zero_pair_capability,
     compile_zero_length_capability,
 };
 use crate::capability_ir::{
-    AcirGridTrackList, AcirInteractionPredicate, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
+    AcirGridTrackList, AcirInteractionPredicate, AcirLinearLength, AcirLengthBasis, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
     AcirSelectorRelation, AcirStructuralPredicate, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
@@ -305,6 +305,7 @@ pub enum CssValue {
     Global(CssGlobalKeyword),
     Px(f32),
     RelativeLength(AcirRelativeLength),
+    LinearLength(AcirLinearLength),
     Content(Option<String>),
     UnsupportedContent(String),
     Var(String),
@@ -315,6 +316,8 @@ pub enum CssValue {
 pub struct Declaration {
     pub property: String,
     pub value: CssValue,
+    /// Author-origin cascade importance, preserved independently from value parsing.
+    pub important: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -792,7 +795,13 @@ fn parse_declarations_with_translations(
             return Err(CssError::MalformedDeclaration(raw.into()));
         };
         let property = property.trim().to_ascii_lowercase();
-        let value = value.trim();
+        let raw_value = value.trim();
+        let important = raw_value.to_ascii_lowercase().ends_with("!important");
+        let value = if important {
+            raw_value[..raw_value.len() - "!important".len()].trim_end()
+        } else {
+            raw_value
+        };
 
         let global_keyword = match value {
             "inherit" => Some(CssGlobalKeyword::Inherit),
@@ -883,6 +892,9 @@ fn parse_declarations_with_translations(
                     } else if let Some(receipt) = compile_zero_length_capability(value)? {
                         translations.push(receipt);
                         Some(CssValue::Px(0.0))
+                    } else if let Some(compiled) = compile_linear_length_capability(value, AcirLengthBasis::ParentFontSize)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::LinearLength(compiled.value))
                     } else if let Some(compiled) = compile_font_size_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -892,7 +904,11 @@ fn parse_declarations_with_translations(
                 }
                 "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
                 | "padding-bottom" | "padding-left" | "gap" => {
-                    if let Some(inner) =
+                    let zero_pair = if property == "gap" { compile_gap_zero_pair_capability(value)? } else { None };
+                    if let Some(receipt) = zero_pair {
+                        translations.push(receipt);
+                        Some(CssValue::Px(0.0))
+                    } else if let Some(inner) =
                         value.strip_prefix("var(").and_then(|v| v.strip_suffix(')'))
                     {
                         let name = inner.trim();
@@ -906,6 +922,9 @@ fn parse_declarations_with_translations(
                     } else if let Some(receipt) = compile_zero_length_capability(value)? {
                         translations.push(receipt);
                         Some(CssValue::Px(0.0))
+                    } else if let Some(compiled) = compile_linear_length_capability(value, AcirLengthBasis::CurrentFontSize)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::LinearLength(compiled.value))
                     } else if let Some(compiled) = compile_current_font_length_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -919,7 +938,7 @@ fn parse_declarations_with_translations(
         };
 
         if let Some(value) = parsed {
-            declarations.push(Declaration { property, value });
+            declarations.push(Declaration { property, value, important });
         }
     }
 

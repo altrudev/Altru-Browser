@@ -215,6 +215,9 @@ fn resolve_value(
         CssValue::RelativeLength(value) => Ok(CssValue::Px(
             value.resolve_px(parent_font_size_px, current_font_size_px),
         )),
+        CssValue::LinearLength(value) => Ok(CssValue::Px(
+            value.resolve_px(parent_font_size_px, current_font_size_px),
+        )),
         other => Ok(other.clone()),
     }
 }
@@ -368,6 +371,10 @@ fn resolve_element_style(
         declarations.extend(parse_declarations(inline)?);
     }
 
+    // Stable author cascade: importance overrides non-important declarations,
+    // while specificity, source order, and inline priority stay ordered within each tier.
+    declarations.sort_by_key(|declaration| declaration.important);
+
     let mut custom_properties = parent_style.custom_properties.clone();
     for declaration in &declarations {
         if declaration.property.starts_with("--")
@@ -442,30 +449,32 @@ pub fn resolve_pseudo_style_for_element(
     }
 
     matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+    let mut declarations = matching.iter()
+        .flat_map(|rule| rule.declarations.iter())
+        .collect::<Vec<_>>();
+    declarations.sort_by_key(|declaration| declaration.important);
     let mut computed = base_style.computed;
     let mut custom_properties = base_style.custom_properties.clone();
 
-    for rule in matching {
-        for declaration in &rule.declarations {
-            if declaration.property.starts_with("--") {
-                if let CssValue::Raw(value) = &declaration.value {
-                    custom_properties.insert(declaration.property.clone(), value.clone());
-                }
-                continue;
+    for declaration in declarations {
+        if declaration.property.starts_with("--") {
+            if let CssValue::Raw(value) = &declaration.value {
+                custom_properties.insert(declaration.property.clone(), value.clone());
             }
-            let value = resolve_value(
-                declaration,
-                &custom_properties,
-                base_style.computed.font_size_px,
-                computed.font_size_px,
-            )?;
-            apply_value(
-                &mut computed,
-                &base_style.computed,
-                &declaration.property,
-                &value,
-            );
+            continue;
         }
+        let value = resolve_value(
+            declaration,
+            &custom_properties,
+            base_style.computed.font_size_px,
+            computed.font_size_px,
+        )?;
+        apply_value(
+            &mut computed,
+            &base_style.computed,
+            &declaration.property,
+            &value,
+        );
     }
 
     Ok(Some(ResolvedStyle {
@@ -502,46 +511,48 @@ pub fn resolve_generated_pseudo_for_element(
     }
 
     matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+    let mut declarations = matching.iter()
+        .flat_map(|rule| rule.declarations.iter())
+        .collect::<Vec<_>>();
+    declarations.sort_by_key(|declaration| declaration.important);
     let mut computed = base_style.computed;
     let mut custom_properties = base_style.custom_properties.clone();
     let mut content: Option<String> = None;
 
-    for rule in matching {
-        for declaration in &rule.declarations {
-            if declaration.property.starts_with("--") {
-                if let CssValue::Raw(value) = &declaration.value {
-                    custom_properties.insert(declaration.property.clone(), value.clone());
-                }
-                continue;
+    for declaration in declarations {
+        if declaration.property.starts_with("--") {
+            if let CssValue::Raw(value) = &declaration.value {
+                custom_properties.insert(declaration.property.clone(), value.clone());
             }
-
-            if declaration.property == "content" {
-                match &declaration.value {
-                    CssValue::Content(value) => content = value.clone(),
-                    CssValue::UnsupportedContent(value) => {
-                        return Err(CssError::InvalidValue {
-                            property: "content".into(),
-                            value: value.clone(),
-                        });
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            let value = resolve_value(
-                declaration,
-                &custom_properties,
-                base_style.computed.font_size_px,
-                computed.font_size_px,
-            )?;
-            apply_value(
-                &mut computed,
-                &base_style.computed,
-                &declaration.property,
-                &value,
-            );
+            continue;
         }
+
+        if declaration.property == "content" {
+            match &declaration.value {
+                CssValue::Content(value) => content = value.clone(),
+                CssValue::UnsupportedContent(value) => {
+                    return Err(CssError::InvalidValue {
+                        property: "content".into(),
+                        value: value.clone(),
+                    });
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        let value = resolve_value(
+            declaration,
+            &custom_properties,
+            base_style.computed.font_size_px,
+            computed.font_size_px,
+        )?;
+        apply_value(
+            &mut computed,
+            &base_style.computed,
+            &declaration.property,
+            &value,
+        );
     }
 
     Ok(content.map(|content| ResolvedGeneratedPseudo { computed, content }))
@@ -611,6 +622,48 @@ mod tests {
     use super::*;
     use crate::native_css::parse_stylesheet;
     use crate::native_html::parse_document;
+
+    #[test]
+    fn important_author_rule_overrides_higher_specificity_and_inline_normal() {
+        let document = parse_document(
+            "<html><body><p id='hero' class='lead' style='font-size: 40px'>Important</p></body></html>"
+        ).unwrap();
+        let sheet = parse_stylesheet(
+            "#hero { font-size: 50px; } .lead { font-size: 20px !important; }"
+        ).unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let p = document.nodes().iter()
+            .find(|node| document.attribute(node.id, "id") == Some("hero")).unwrap();
+        assert_eq!(styles[p.id].computed.font_size_px, 20.0);
+    }
+
+    #[test]
+    fn inline_important_takes_priority_over_stylesheet_important() {
+        let document = parse_document(
+            "<html><body><p class='lead' style='font-size: 24px !important'>Important</p></body></html>"
+        ).unwrap();
+        let sheet = parse_stylesheet(".lead { font-size: 20px!important; }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let p = document.nodes().iter()
+            .find(|node| document.attribute(node.id, "class") == Some("lead")).unwrap();
+        assert_eq!(styles[p.id].computed.font_size_px, 24.0);
+    }
+
+    #[test]
+    fn linear_calc_uses_correct_current_and_parent_font_bases() {
+        let document = parse_document(
+            "<html><body><div class='parent'><p class='child'>Native math</p></div></body></html>"
+        ).unwrap();
+        let sheet = parse_stylesheet(
+            ".parent { font-size: 20px; } .child { padding-top: calc(0.667em + 2px); font-size: calc(0.5em + 2px); }"
+        ).unwrap();
+        let resolved = resolve_styles(&document, &sheet).unwrap();
+        let child = document.nodes().iter()
+            .find(|n| document.attribute(n.id, "class") == Some("child"))
+            .unwrap();
+        assert!((resolved[child.id].computed.font_size_px - 12.0).abs() < 0.001);
+        assert!((resolved[child.id].computed.padding_top_px - 10.004).abs() < 0.001);
+    }
 
     #[test]
     fn heading_style_is_engine_owned() {

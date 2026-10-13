@@ -208,6 +208,28 @@ mod tests {
     }
 
     #[test]
+    fn zero_pair_gap_keeps_native_layout_and_receipt() {
+        let html = "<html><head><style>div { gap: 0 0; }</style></head><body><div><p>A</p><p>B</p></div></body></html>";
+        let execution = execute_native_document(html).unwrap();
+        assert!(execution.native_semantics);
+        assert!(execution.translations.iter().any(|r| r.translation_id == crate::capability_compiler::CSS_GAP_ZERO_PAIR_V1));
+    }
+
+    #[test]
+    fn linear_calc_translation_is_bound_to_native_execution() {
+        let html = "<html><head><style>p { padding-top: calc(0.667em + 2px); }</style></head><body><p>Native calc</p></body></html>";
+        let execution = execute_native_document(html).unwrap();
+        assert!(execution.native_semantics);
+        assert!(execution.artifact.contains("Native calc"));
+        assert!(execution.translations.iter().any(|r| r.translation_id == crate::capability_compiler::CSS_CALC_LINEAR_LENGTH_V1));
+        let different = execute_native_document(
+            "<html><head><style>p { padding-top: calc(0.667em + 3px); }</style></head><body><p>Native calc</p></body></html>"
+        ).unwrap();
+        assert_ne!(execution.evidence.translation_sha256, different.evidence.translation_sha256);
+        assert_ne!(execution.evidence.execution_sha256, different.evidence.execution_sha256);
+    }
+
+    #[test]
     fn native_universal_selector_document_executes_with_bound_evidence() {
         let html = "<html><head><style>* { margin-top: 0; } *.highlight { font-size: 18px; }</style></head><body><p class=\"highlight\">Native universal CSS</p></body></html>";
         let execution = execute_native_document(html).unwrap();

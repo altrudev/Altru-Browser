@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirPseudoElement, AcirRelativeLength,
+    AcirInteractionPredicate, AcirLengthBasis, AcirLinearLength, AcirMediaType, AcirPseudoElement, AcirRelativeLength,
     AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirStructuralPredicate,
     AcirSupportCondition, AcirGridTrack, AcirGridTrackList, CapabilityEnvironment,
 };
@@ -24,6 +24,8 @@ pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural.v1";
 pub const CSS_SELECTOR_DIRECT_HAS_V1: &str = "css.selector-direct-has.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
+pub const CSS_CALC_LINEAR_LENGTH_V1: &str = "css.calc-linear-em-plus-px.v1";
+pub const CSS_GAP_ZERO_PAIR_V1: &str = "css.gap-zero-pair.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
 pub const CSS_LENGTH_ZERO_V1: &str = "css.length-zero.v1";
 pub const CSS_GRID_REPEAT_FIXED_FR_V1: &str = "css.grid-repeat-fixed-fr.v1";
@@ -122,6 +124,18 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
+        id: CSS_CALC_LINEAR_LENGTH_V1,
+        source_family: "css-calc-nonnegative-em-plus-px",
+        target_semantics: "acir.linear-length",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_GAP_ZERO_PAIR_V1,
+        source_family: "css-gap-two-unitless-zeros",
+        target_semantics: "native.gap.px-zero-both-axes",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
         id: CSS_SUPPORTS_DECLARATION_V1,
         source_family: "css-supports-declaration",
         target_semantics: "acir.support-condition",
@@ -213,6 +227,12 @@ pub struct CompiledSelectorStructuralCapability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledRelativeLengthCapability {
     pub value: AcirRelativeLength,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledLinearLengthCapability {
+    pub value: AcirLinearLength,
     pub receipt: TranslationReceipt,
 }
 
@@ -364,6 +384,58 @@ pub fn compile_current_font_length_capability(
         },
         receipt: TranslationReceipt {
             translation_id: CSS_LENGTH_EM_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+/// Exact semantics for two-dimensional `gap: 0 0`: both row and column gaps are zero.
+/// Other gap pairs remain unsupported until both axes are independently modeled.
+pub fn compile_gap_zero_pair_capability(
+    input: &str,
+) -> Result<Option<TranslationReceipt>, CapabilityCompilerError> {
+    if input.split_ascii_whitespace().collect::<Vec<_>>() != ["0", "0"] {
+        return Ok(None);
+    }
+    require_verified(CSS_GAP_ZERO_PAIR_V1)?;
+    Ok(Some(TranslationReceipt {
+        translation_id: CSS_GAP_ZERO_PAIR_V1.into(),
+        source_sha256: sha256(input),
+        decision: TranslationDecision::Admitted,
+    }))
+}
+
+/// Compile only a strictly bounded nonnegative `calc(Nem + Mpx)` expression.
+/// No variables, subtraction, nesting, cross-unit arithmetic, or silent fallback.
+pub fn compile_linear_length_capability(
+    input: &str,
+    basis: AcirLengthBasis,
+) -> Result<Option<CompiledLinearLengthCapability>, CapabilityCompilerError> {
+    let raw = input.trim().to_ascii_lowercase();
+    if !raw.starts_with("calc(") {
+        return Ok(None);
+    }
+    let invalid = || CapabilityCompilerError::UnsupportedValue(input.into());
+    let inner = raw.strip_prefix("calc(")
+        .and_then(|v| v.strip_suffix(')'))
+        .ok_or_else(invalid)?;
+    let (font, pixels) = inner.split_once(" + ").ok_or_else(invalid)?;
+    let font = font.trim().strip_suffix("em").ok_or_else(invalid)?;
+    let pixels = pixels.trim().strip_suffix("px").ok_or_else(invalid)?;
+    let font_milli = parse_decimal_milli_value(font)?;
+    let pixel_milli = parse_decimal_milli_value(pixels)?;
+    if font_milli > 100_000 || pixel_milli > 1_000_000 {
+        return Err(invalid());
+    }
+    require_verified(CSS_CALC_LINEAR_LENGTH_V1)?;
+    Ok(Some(CompiledLinearLengthCapability {
+        value: AcirLinearLength {
+            font: AcirRelativeLength { milli_factor: font_milli, basis },
+            pixel_milli_offset: pixel_milli,
+        },
+        receipt: TranslationReceipt {
+            translation_id: CSS_CALC_LINEAR_LENGTH_V1.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },
@@ -1511,6 +1583,44 @@ pub fn compile_stylesheet_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_zero_gap_terms_have_exact_receipted_semantics() {
+        let receipt = compile_gap_zero_pair_capability("0 0").unwrap().unwrap();
+        assert_eq!(receipt.translation_id, CSS_GAP_ZERO_PAIR_V1);
+        assert_eq!(receipt.source_sha256, sha256("0 0"));
+        assert!(compile_gap_zero_pair_capability("0px 0px").unwrap().is_none());
+        assert!(compile_gap_zero_pair_capability("0 1px").unwrap().is_none());
+        assert!(compile_gap_zero_pair_capability("0 0 0").unwrap().is_none());
+    }
+
+    #[test]
+    fn linear_calc_em_plus_px_is_receipted_and_bounded() {
+        let css = "calc(0.667em + 2px)";
+        let compiled = compile_linear_length_capability(css, AcirLengthBasis::CurrentFontSize)
+            .unwrap().unwrap();
+        assert_eq!(compiled.value.font.milli_factor, 667);
+        assert_eq!(compiled.value.pixel_milli_offset, 2000);
+        assert!((compiled.value.resolve_px(20.0, 18.0) - 14.006).abs() < 0.001);
+        assert_eq!(compiled.receipt.translation_id, CSS_CALC_LINEAR_LENGTH_V1);
+        assert_eq!(compiled.receipt.source_sha256, sha256(css));
+        let parent = compile_linear_length_capability(css, AcirLengthBasis::ParentFontSize)
+            .unwrap().unwrap();
+        assert!((parent.value.resolve_px(20.0, 18.0) - 15.34).abs() < 0.001);
+        assert_ne!(
+            compiled.receipt.source_sha256,
+            compile_linear_length_capability("calc(0.667em + 3px)", AcirLengthBasis::CurrentFontSize)
+                .unwrap().unwrap().receipt.source_sha256
+        );
+        for malformed in [
+            "calc(0.667em - 2px)", "calc(0.667em + 2px + 3px)",
+            "calc(var(--x) + 2px)", "calc(2px + 0.667em)",
+            "calc(1em + 1.2345px)", "calc(1000em + 2px)",
+            "calc(1em + 10000px)", "calc(1em + 2px", "calc(1em * 2px)",
+        ] {
+            assert!(compile_linear_length_capability(malformed, AcirLengthBasis::CurrentFontSize).is_err(), "unexpected admission {malformed}");
+        }
+    }
 
     #[test]
     fn unitless_zero_length_compiles_but_nonzero_unitless_does_not() {
