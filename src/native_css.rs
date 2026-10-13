@@ -786,22 +786,13 @@ fn parse_declarations_with_translations(
     let mut declarations = Vec::new();
     let mut translations = Vec::new();
 
-    for raw in input.split(';') {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            continue;
-        }
-        let Some((property, value)) = raw.split_once(':') else {
-            return Err(CssError::MalformedDeclaration(raw.into()));
-        };
-        let property = property.trim().to_ascii_lowercase();
-        let raw_value = value.trim();
-        let important = raw_value.to_ascii_lowercase().ends_with("!important");
-        let value = if important {
-            raw_value[..raw_value.len() - "!important".len()].trim_end()
-        } else {
-            raw_value
-        };
+    let canonical = crate::css_canonical::parse_declaration_list(input)
+        .map_err(|error| CssError::MalformedDeclaration(format!("{error:?}")))?;
+    for item in canonical.declarations {
+        let property = item.property;
+        let important = item.important;
+        let value = item.value;
+        let value = value.as_str();
 
         let global_keyword = match value {
             "inherit" => Some(CssGlobalKeyword::Inherit),
