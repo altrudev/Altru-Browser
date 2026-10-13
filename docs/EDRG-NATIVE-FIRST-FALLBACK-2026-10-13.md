@@ -17,7 +17,8 @@ Allowed: isolated Prometheus worktree, local dependency experiments, owned-nativ
 - scripts/verify-edge-compatibility.sh: PASS on Prometheus (offline default+Taffy tests, differential fixture verifier and diff check).
 - cargo fmt --check: BLOCKED by pre-existing formatting drift in files outside this sprint.
 - cargo clippy --offline --lib -- -D warnings: BLOCKED by seven existing lint findings; **not** an acceptance PASS.
-- Full public CNET rendering and independent remote GUI acceptance: NOT VERIFIED. There may be additional HTML/CSS/JavaScript blockers.
+- Live native CNET test on Prometheus: FAIL. After the universal selector fix, the next observed blocker is `Engine(Css(InvalidValue { property: "padding-top", value: "calc(0.667em + 2px)" }))`. This is a CSS math feature gap, not fallback execution. Browser compatibility is NOT VERIFIED.
+- Independent remote GUI acceptance: NOT VERIFIED; the VPS preview was not promoted or retested with this build.
 - Servo 0.6 compilation remains experimental and is not required for native runtime. Isolated Cargo image version / lockfile edits must not be included in native-first commit until separately validated.
 - DDC/Frequency execution gateway has not produced an independently signed receipt for this sprint; this file documents the EDRG checks, not a claimed gateway attestation.
 
