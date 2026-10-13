@@ -9,7 +9,7 @@ use crate::capability_compiler::{
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
     compile_selector_structural_capability, compile_stylesheet_capabilities, compile_linear_length_capability, compile_gap_zero_pair_capability,
-    compile_zero_length_capability,
+    compile_zero_length_capability, compile_root_font_length_capability,
 };
 use crate::capability_ir::{
     AcirGridTrackList, AcirInteractionPredicate, AcirLinearLength, AcirLengthBasis, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
@@ -895,6 +895,9 @@ fn parse_declarations_with_translations(
                     } else if let Some(compiled) = compile_linear_length_capability(value, AcirLengthBasis::ParentFontSize)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::LinearLength(compiled.value))
+                    } else if let Some(compiled) = compile_root_font_length_capability(value)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::RelativeLength(compiled.value))
                     } else if let Some(compiled) = compile_font_size_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -925,6 +928,9 @@ fn parse_declarations_with_translations(
                     } else if let Some(compiled) = compile_linear_length_capability(value, AcirLengthBasis::CurrentFontSize)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::LinearLength(compiled.value))
+                    } else if let Some(compiled) = compile_root_font_length_capability(value)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::RelativeLength(compiled.value))
                     } else if let Some(compiled) = compile_current_font_length_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -1626,10 +1632,12 @@ mod tests {
 
     #[test]
     fn rem_is_not_silently_treated_as_em() {
-        assert!(matches!(
-            parse_declarations("font-size: 1rem;"),
-            Err(CssError::InvalidValue { property, .. }) if property == "font-size"
+        let values = parse_declarations("font-size: 1rem;").unwrap();
+        assert!(matches!(values[0].value,
+            CssValue::RelativeLength(ref value) if value.milli_factor == 1000
+                && value.basis == AcirLengthBasis::RootFontSize
         ));
+        assert!(parse_declarations("margin-top: 1000000rem;").is_err());
     }
 
     #[test]

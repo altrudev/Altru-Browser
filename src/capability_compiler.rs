@@ -24,6 +24,7 @@ pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural.v1";
 pub const CSS_SELECTOR_DIRECT_HAS_V1: &str = "css.selector-direct-has.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
+pub const CSS_LENGTH_REM_V1: &str = "css.length-rem.root-font.v1";
 pub const CSS_CALC_LINEAR_LENGTH_V1: &str = "css.calc-linear-em-plus-px.v1";
 pub const CSS_GAP_ZERO_PAIR_V1: &str = "css.gap-zero-pair.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
@@ -121,6 +122,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_LENGTH_EM_V1,
         source_family: "css-length-em",
         target_semantics: "acir.relative-length.current-font",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_LENGTH_REM_V1,
+        source_family: "css-length-rem",
+        target_semantics: "acir.relative-length.root-font",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -384,6 +391,31 @@ pub fn compile_current_font_length_capability(
         },
         receipt: TranslationReceipt {
             translation_id: CSS_LENGTH_EM_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+pub fn compile_root_font_length_capability(
+    input: &str,
+) -> Result<Option<CompiledRelativeLengthCapability>, CapabilityCompilerError> {
+    let normalized = input.trim().to_ascii_lowercase();
+    let Some(number) = normalized.strip_suffix("rem") else {
+        return Ok(None);
+    };
+    require_verified(CSS_LENGTH_REM_V1)?;
+    let milli_factor = parse_decimal_milli_value(number)?;
+    if milli_factor > 100_000 {
+        return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+    }
+    Ok(Some(CompiledRelativeLengthCapability {
+        value: AcirRelativeLength {
+            milli_factor,
+            basis: AcirLengthBasis::RootFontSize,
+        },
+        receipt: TranslationReceipt {
+            translation_id: CSS_LENGTH_REM_V1.into(),
             source_sha256: sha256(input),
             decision: TranslationDecision::Admitted,
         },

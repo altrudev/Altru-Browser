@@ -101,6 +101,7 @@ impl ComputedStyle {
 pub struct ResolvedStyle {
     pub computed: ComputedStyle,
     pub custom_properties: BTreeMap<String, String>,
+    pub root_font_size_px: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +115,7 @@ impl ResolvedStyle {
         Self {
             computed: ComputedStyle::initial(),
             custom_properties: BTreeMap::new(),
+            root_font_size_px: 16.0,
         }
     }
 }
@@ -195,6 +197,7 @@ fn resolve_value(
     custom_properties: &BTreeMap<String, String>,
     parent_font_size_px: f32,
     current_font_size_px: f32,
+    root_font_size_px: f32,
 ) -> Result<CssValue, CssError> {
     match &declaration.value {
         CssValue::Var(name) => {
@@ -204,7 +207,17 @@ fn resolve_value(
             match declaration.property.as_str() {
                 "font-size" | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
                 | "padding-bottom" | "padding-left" | "gap" => {
-                    Ok(CssValue::Px(parse_custom_px(&declaration.property, raw)?))
+                    if let Some(compiled) = crate::capability_compiler::compile_root_font_length_capability(raw)? {
+                        Ok(CssValue::Px(compiled.value.resolve_px_with_root(
+                            parent_font_size_px, current_font_size_px, root_font_size_px,
+                        )))
+                    } else if let Some(compiled) = crate::capability_compiler::compile_current_font_length_capability(raw)? {
+                        Ok(CssValue::Px(compiled.value.resolve_px_with_root(
+                            parent_font_size_px, current_font_size_px, root_font_size_px,
+                        )))
+                    } else {
+                        Ok(CssValue::Px(parse_custom_px(&declaration.property, raw)?))
+                    }
                 }
                 _ => Err(CssError::InvalidValue {
                     property: declaration.property.clone(),
@@ -213,10 +226,10 @@ fn resolve_value(
             }
         }
         CssValue::RelativeLength(value) => Ok(CssValue::Px(
-            value.resolve_px(parent_font_size_px, current_font_size_px),
+            value.resolve_px_with_root(parent_font_size_px, current_font_size_px, root_font_size_px),
         )),
         CssValue::LinearLength(value) => Ok(CssValue::Px(
-            value.resolve_px(parent_font_size_px, current_font_size_px),
+            value.resolve_px_with_root(parent_font_size_px, current_font_size_px, root_font_size_px),
         )),
         other => Ok(other.clone()),
     }
@@ -392,6 +405,7 @@ fn resolve_element_style(
             &custom_properties,
             parent_style.computed.font_size_px,
             computed.font_size_px,
+            parent_style.root_font_size_px,
         )?;
         apply_value(
             &mut computed,
@@ -410,6 +424,7 @@ fn resolve_element_style(
             &custom_properties,
             parent_style.computed.font_size_px,
             computed.font_size_px,
+            parent_style.root_font_size_px,
         )?;
         apply_value(
             &mut computed,
@@ -420,6 +435,7 @@ fn resolve_element_style(
     }
 
     Ok(ResolvedStyle {
+        root_font_size_px: if matches!(&candidate.kind, NodeKind::Element { tag } if tag == "html") { computed.font_size_px } else { parent_style.root_font_size_px },
         computed,
         custom_properties,
     })
@@ -468,6 +484,7 @@ pub fn resolve_pseudo_style_for_element(
             &custom_properties,
             base_style.computed.font_size_px,
             computed.font_size_px,
+            base_style.root_font_size_px,
         )?;
         apply_value(
             &mut computed,
@@ -480,6 +497,7 @@ pub fn resolve_pseudo_style_for_element(
     Ok(Some(ResolvedStyle {
         computed,
         custom_properties,
+        root_font_size_px: base_style.root_font_size_px,
     }))
 }
 
@@ -546,6 +564,7 @@ pub fn resolve_generated_pseudo_for_element(
             &custom_properties,
             base_style.computed.font_size_px,
             computed.font_size_px,
+            base_style.root_font_size_px,
         )?;
         apply_value(
             &mut computed,
@@ -584,6 +603,7 @@ pub fn resolve_styles_with_interaction(
                 inherited.computed.font_size_px = parent_style.computed.font_size_px;
                 inherited.computed.display = parent_style.computed.display;
                 inherited.custom_properties = parent_style.custom_properties.clone();
+                inherited.root_font_size_px = parent_style.root_font_size_px;
                 inherited
             }
             NodeKind::Element { .. } => {
@@ -622,6 +642,31 @@ mod tests {
     use super::*;
     use crate::native_css::parse_stylesheet;
     use crate::native_html::parse_document;
+
+    #[test]
+    fn custom_property_rem_uses_root_font_size() {
+        let document = parse_document("<html><body><p class='x'>Variable rem</p></body></html>").unwrap();
+        let sheet = parse_stylesheet("html { font-size: 24px; --space: 2.25rem; } .x { margin-top: var(--space); }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let p = document.nodes().iter().find(|n| document.attribute(n.id, "class") == Some("x")).unwrap();
+        assert!((styles[p.id].computed.margin_before_px - 54.0).abs() < 0.001);
+        assert_eq!(styles[p.id].root_font_size_px, 24.0);
+    }
+
+    #[test]
+    fn rem_tracks_computed_html_root_font_not_parent_font() {
+        let document = parse_document("<html><body><div class='parent'><p class='child'>Root unit</p></div></body></html>").unwrap();
+        let sheet = parse_stylesheet("html { font-size: 20px; } .parent { font-size: 30px; } .child { margin-top: 2.25rem; font-size: 1.5rem; }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let child = document.nodes().iter().find(|node| document.attribute(node.id, "class") == Some("child")).unwrap();
+        assert!((styles[child.id].computed.margin_before_px - 45.0).abs() < 0.001);
+        assert!((styles[child.id].computed.font_size_px - 30.0).abs() < 0.001);
+        assert_eq!(styles[child.id].root_font_size_px, 20.0);
+        let changed = parse_stylesheet("html { font-size: 24px; } .parent { font-size: 30px; } .child { margin-top: 2.25rem; font-size: 1.5rem; }").unwrap();
+        let updated = resolve_styles(&document, &changed).unwrap();
+        assert!((updated[child.id].computed.margin_before_px - 54.0).abs() < 0.001);
+        assert!((updated[child.id].computed.font_size_px - 36.0).abs() < 0.001);
+    }
 
     #[test]
     fn important_author_rule_overrides_higher_specificity_and_inline_normal() {
