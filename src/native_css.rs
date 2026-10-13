@@ -335,6 +335,9 @@ pub struct StyleSheet {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledStyleSheet {
     pub stylesheet: StyleSheet,
+    /// Source-preserving canonical rule/value tree used to validate native lowering.
+    pub canonical: crate::css_canonical::CanonicalStylesheet,
+    pub canonical_source_sha256: String,
     pub translations: Vec<TranslationReceipt>,
 }
 
@@ -1079,11 +1082,16 @@ pub fn parse_stylesheet_with_environment(
 ) -> Result<CompiledStyleSheet, CssError> {
     let cleaned = strip_css_comments(input)?;
     let compiled = compile_stylesheet_capabilities(&cleaned, environment)?;
+    let canonical = crate::css_canonical::parse_stylesheet_structure(&compiled.source)
+        .map_err(|error| CssError::MalformedDeclaration(format!("canonical CSS: {error:?}")))?;
     let (stylesheet, selector_translations) = parse_compiled_stylesheet(&compiled.source)?;
     let mut translations = compiled.receipts;
     translations.extend(selector_translations);
+    use sha2::{Digest, Sha256};
     Ok(CompiledStyleSheet {
         stylesheet,
+        canonical,
+        canonical_source_sha256: hex::encode(Sha256::digest(compiled.source.as_bytes())),
         translations,
     })
 }

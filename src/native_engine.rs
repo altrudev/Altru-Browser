@@ -52,6 +52,7 @@ pub struct NativeExecutionEvidence {
     pub artifact_sha256: String,
     pub execution_sha256: String,
     pub translation_sha256: String,
+    pub canonical_css_sha256: String,
     pub mutation_epoch: u64,
     pub scene_epoch: u64,
 }
@@ -145,10 +146,11 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
     let input_sha256 = sha256(input.as_bytes());
     let artifact_sha256 = sha256(artifact.as_bytes());
     let execution_material = format!(
-        "awef-native-n2.1-execution-v2\n{}\n{}\n{}\n{}\n{}",
+        "awef-native-n2.1-execution-v3\n{}\n{}\n{}\n{}\n{}\n{}",
         input_sha256,
         artifact_sha256,
         translation_sha256,
+        compiled_styles.canonical_source_sha256,
         document.mutation_epoch(),
         scene.epoch
     );
@@ -159,6 +161,7 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
         artifact_sha256,
         execution_sha256,
         translation_sha256,
+        canonical_css_sha256: compiled_styles.canonical_source_sha256,
         mutation_epoch: document.mutation_epoch(),
         scene_epoch: scene.epoch,
     };
@@ -205,6 +208,17 @@ mod tests {
             );
         }
         assert!(!manifest.production_eligible());
+    }
+
+    #[test]
+    fn canonical_css_source_is_bound_into_native_execution_evidence() {
+        let first = execute_native_document("<html><style>p { font-size: 18px; }</style><body><p>Bound</p></body></html>").unwrap();
+        let changed = execute_native_document("<html><style>p { font-size: 19px; }</style><body><p>Bound</p></body></html>").unwrap();
+        assert_eq!(first.evidence.canonical_css_sha256.len(), 64);
+        assert_ne!(first.evidence.canonical_css_sha256, changed.evidence.canonical_css_sha256);
+        assert_ne!(first.evidence.execution_sha256, changed.evidence.execution_sha256);
+        assert!(first.native_semantics);
+        assert!(!first.production_promoted);
     }
 
     #[test]
