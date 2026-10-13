@@ -208,6 +208,17 @@ mod tests {
     }
 
     #[test]
+    fn native_universal_selector_document_executes_with_bound_evidence() {
+        let html = "<html><head><style>* { margin-top: 0; } *.highlight { font-size: 18px; }</style></head><body><p class=\"highlight\">Native universal CSS</p></body></html>";
+        let execution = execute_native_document(html).unwrap();
+        assert!(execution.native_semantics);
+        assert!(!execution.production_promoted);
+        assert!(execution.artifact.contains("Native universal CSS"));
+        assert_eq!(execution.evidence.input_sha256, sha256(html.as_bytes()));
+        assert_eq!(execution.evidence.execution_sha256.len(), 64);
+    }
+
+    #[test]
     fn native_path_runs_without_servo() {
         let execution =
             execute_native_document("<html><body><h1>Hello</h1><p>World</p></body></html>")

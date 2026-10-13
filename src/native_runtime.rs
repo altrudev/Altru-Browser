@@ -15,6 +15,15 @@ pub struct NativePage {
     pub execution: NativeExecution,
 }
 
+/// No alternate renderer is executed unless explicitly permitted and actually wired.
+/// Permission alone never implies that a fallback engine is available or trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FallbackPolicy {
+    #[default]
+    Deny,
+    PermitVerifiedServo,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeRuntimeError {
     Navigation(NavigationError),
@@ -22,6 +31,8 @@ pub enum NativeRuntimeError {
     HttpStatus(u16),
     InvalidUtf8,
     Engine(NativeEngineError),
+    /// Native execution was attempted first; fallback was authorized but is not wired.
+    FallbackUnavailable(NativeEngineError),
 }
 
 pub struct NativeRuntime<B: ResourceBroker> {
@@ -29,6 +40,7 @@ pub struct NativeRuntime<B: ResourceBroker> {
     engine: NativeEngineAdapter,
     broker: B,
     next_request_id: u64,
+    fallback_policy: FallbackPolicy,
 }
 
 impl<B: ResourceBroker> NativeRuntime<B> {
@@ -38,7 +50,16 @@ impl<B: ResourceBroker> NativeRuntime<B> {
             engine: NativeEngineAdapter,
             broker,
             next_request_id: 0,
+            fallback_policy: FallbackPolicy::Deny,
         }
+    }
+
+    pub fn set_fallback_policy(&mut self, policy: FallbackPolicy) {
+        self.fallback_policy = policy;
+    }
+
+    pub fn fallback_policy(&self) -> FallbackPolicy {
+        self.fallback_policy
     }
 
     pub fn kernel(&self) -> &BrowserKernel {
@@ -102,10 +123,16 @@ impl<B: ResourceBroker> NativeRuntime<B> {
 
         let source =
             String::from_utf8(response.body).map_err(|_| NativeRuntimeError::InvalidUtf8)?;
-        let execution = self
-            .engine
-            .execute(source)
-            .map_err(NativeRuntimeError::Engine)?;
+        let execution = self.engine.execute(source).map_err(|error| {
+            match (&self.fallback_policy, &error) {
+                (FallbackPolicy::PermitVerifiedServo, NativeEngineError::Css(crate::native_css::CssError::UnsupportedSelector(_))) => {
+                    // No verified Servo navigator is wired. Never claim success or
+                    // pass the document to another engine implicitly.
+                    NativeRuntimeError::FallbackUnavailable(error)
+                }
+                _ => NativeRuntimeError::Engine(error),
+            }
+        })?;
 
         Ok(NativePage {
             navigation_id,
@@ -161,6 +188,33 @@ mod tests {
         let reloaded = runtime.reload().unwrap().unwrap();
         assert_eq!(reloaded.navigation_id, second.navigation_id);
         assert_eq!(runtime.kernel().history().len(), 2);
+    }
+
+    struct UnsupportedCssBroker;
+
+    impl ResourceBroker for UnsupportedCssBroker {
+        fn fetch(&mut self, request: &ResourceRequest) -> Result<ResourceResponse, ResourceError> {
+            Ok(ResourceResponse {
+                request_id: request.request_id,
+                status: 200,
+                media_type: "text/html".into(),
+                body: b"<html><style>p:never-supported(42) { color: red; }</style><body><p>Denied</p></body></html>".to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn native_default_does_not_invoke_fallback() {
+        let mut runtime = NativeRuntime::new(UnsupportedCssBroker);
+        assert_eq!(runtime.fallback_policy(), FallbackPolicy::Deny);
+        assert!(matches!(runtime.load("awef://unsupported"), Err(NativeRuntimeError::Engine(NativeEngineError::Css(_)))));
+    }
+
+    #[test]
+    fn authorized_but_unwired_fallback_still_fails_closed() {
+        let mut runtime = NativeRuntime::new(UnsupportedCssBroker);
+        runtime.set_fallback_policy(FallbackPolicy::PermitVerifiedServo);
+        assert!(matches!(runtime.load("awef://unsupported"), Err(NativeRuntimeError::FallbackUnavailable(NativeEngineError::Css(_)))));
     }
 
     #[test]

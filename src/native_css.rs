@@ -474,7 +474,6 @@ fn simple_selector_has_top_level_pseudo_or_space(input: &str) -> Result<bool, Cs
 fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty()
-        || input.trim_start().starts_with('*')
         || simple_selector_has_top_level_pseudo_or_space(input)?
     {
         return Err(CssError::UnsupportedSelector(input.into()));
@@ -497,7 +496,9 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     };
     let mut cursor = 0usize;
 
-    if !matches!(input.as_bytes().first(), Some(b'.' | b'#' | b'[')) {
+    if input.starts_with('*') {
+        cursor = 1;
+    } else if !matches!(input.as_bytes().first(), Some(b'.' | b'#' | b'[')) {
         let end = input.find(['.', '#', '[']).unwrap_or(input.len());
         let tag = input[..end].trim();
         if tag.is_empty() || tag.chars().any(char::is_whitespace) {
@@ -546,6 +547,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         && selector.classes.is_empty()
         && selector.attributes.is_empty()
         && !selector.root
+        && !input.starts_with('*')
     {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
@@ -557,6 +559,11 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty() {
         return Err(CssError::UnsupportedSelector(input.into()));
+    }
+    // Universal type selectors are zero-specificity and match elements only.
+    // Preserve strict rejection of unsupported pseudo/combinator syntax.
+    if input.starts_with('*') && !input.contains([' ', '>', '+', '~', ':', ',']) {
+        return parse_simple_selector(input);
     }
 
     if let Some((base, nth, _receipt)) = compile_direct_has_capability(input)? {
@@ -1335,6 +1342,29 @@ mod tests {
             .translations
             .iter()
             .any(|receipt| receipt.translation_id == "css.selector-structural.v1"));
+    }
+
+    #[test]
+    fn universal_selector_is_native_and_zero_specificity() {
+        let selector = parse_selector("*").unwrap();
+        assert_eq!(selector.specificity(), (0, 0, 0));
+        assert_eq!(selector.tag, None);
+        assert!(parse_selector("*.card").is_ok());
+        assert!(parse_selector("*#banner").is_ok());
+        assert!(parse_selector("*[data-kind=test]").is_ok());
+        for invalid in ["**", "*:", "* >", "*+", "*~", "*?", "*\\nscript"] {
+            assert!(parse_selector(invalid).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn universal_selector_flows_through_stylesheet_and_matches_elements() {
+        let document = parse_document("<html><body><p class=\"card\">Hi</p></body></html>").unwrap();
+        let sheet = parse_stylesheet("* { margin-top: 0; } *.card { margin-bottom: 0; }").unwrap();
+        assert_eq!(sheet.rules.len(), 2);
+        let p = document.nodes().iter().find(|n| matches!(&n.kind, NodeKind::Element { tag } if tag == "p")).unwrap();
+        assert!(sheet.rules[0].selector.matches(&document, p.id));
+        assert!(sheet.rules[1].selector.matches(&document, p.id));
     }
 
     #[test]
