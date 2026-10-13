@@ -790,7 +790,7 @@ fn parse_declarations_with_translations(
     let mut translations = Vec::new();
 
     let canonical = crate::css_canonical::parse_declaration_list(input)
-        .map_err(|error| CssError::MalformedDeclaration(format!("{error:?}")))?;
+        .map_err(|error| CssError::MalformedDeclaration(format!("{error:?} in {}", input.chars().take(140).collect::<String>())))?;
     for item in canonical.declarations {
         let property = item.property;
         let important = item.important;
@@ -1024,32 +1024,36 @@ fn collect_selector_translation_receipts(
 fn parse_compiled_stylesheet(
     input: &str,
 ) -> Result<(StyleSheet, Vec<TranslationReceipt>), CssError> {
+    let canonical = crate::css_canonical::parse_stylesheet_structure(input)
+        .map_err(|_error| CssError::MalformedRule)?;
     let mut rules = Vec::new();
     let mut translations = Vec::new();
-    let mut rest = input;
     let mut order = 0usize;
 
-    while !rest.trim().is_empty() {
-        let Some(open) = rest.find('{') else {
-            return Err(CssError::MalformedRule);
+    for rule in canonical.rules {
+        let crate::css_canonical::CanonicalRule::Style { selector: selector_source, declarations: canonical_declarations } = rule else {
+            // Non-style at-rules are represented and observable in CanonicalStylesheet.
+            // They are NOT silently reinterpreted as native style rules.
+            continue;
         };
-        let Some(close_rel) = rest[open + 1..].find('}') else {
-            return Err(CssError::MalformedRule);
-        };
-        let close = open + 1 + close_rel;
-
-        let selector_source = rest[..open].trim();
         let selectors = if let Some(compiled_list) =
-            compile_selector_list_capability(selector_source)?
+            compile_selector_list_capability(&selector_source)?
         {
             translations.push(compiled_list.receipt);
             compiled_list.selectors
         } else {
-            vec![selector_source.to_string()]
+            vec![selector_source]
         };
-
+        let source = canonical_declarations.declarations.iter()
+            .map(|declaration| format!(
+                "{}: {}{};",
+                declaration.property,
+                declaration.value,
+                if declaration.important { " !important" } else { "" },
+            ))
+            .collect::<String>();
         let (declarations, declaration_translations) =
-            parse_declarations_with_translations(&rest[open + 1..close])?;
+            parse_declarations_with_translations(&source)?;
         translations.extend(declaration_translations);
 
         for selector_source in selectors {
@@ -1068,11 +1072,8 @@ fn parse_compiled_stylesheet(
                 order,
             });
         }
-
         order += 1;
-        rest = &rest[close + 1..];
     }
-
     Ok((StyleSheet { rules }, translations))
 }
 
@@ -1366,6 +1367,19 @@ mod tests {
             .translations
             .iter()
             .any(|receipt| receipt.translation_id == "css.selector-structural.v1"));
+    }
+
+    #[test]
+    fn canonical_native_lowering_preserves_nested_keyframes_without_phantom_rules() {
+        let compiled = parse_stylesheet_with_environment(
+            "@keyframes fade { 0% { visibility: hidden; } 100% { visibility: visible; } } p { font-size: 18px; }",
+            CapabilityEnvironment::default(),
+        ).unwrap();
+        assert_eq!(compiled.stylesheet.rules.len(), 1);
+        assert_eq!(compiled.stylesheet.rules[0].selector.tag.as_deref(), Some("p"));
+        assert_eq!(compiled.canonical.rules.len(), 2);
+        assert_eq!(compiled.canonical_source_sha256.len(), 64);
+        assert!(matches!(&compiled.canonical.rules[0], crate::css_canonical::CanonicalRule::AtRule { name, body: Some(_), .. } if name == "keyframes"));
     }
 
     #[test]
