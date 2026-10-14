@@ -149,7 +149,22 @@ impl<B: ResourceBroker> NativeRuntime<B> {
                 if dependency.kind != ResourceKind::StyleSheet { continue; }
                 let resolved = base.join(&dependency.reference)
                     .map_err(|_| NativeRuntimeError::Resource(ResourceError::Denied))?;
-                if resolved.scheme() != "https" || resolved.origin() != base.origin()
+                // Classic stylesheets may be loaded in no-CORS mode across origins.
+                // Stylesheet links explicitly requesting CORS require response-header
+                // validation, which this broker interface cannot yet evidence.
+                let unsafe_host = resolved.host_str().is_some_and(|host| {
+                    host.eq_ignore_ascii_case("localhost")
+                        || host.ends_with(".localhost")
+                        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
+                            std::net::IpAddr::V4(v4) =>
+                                v4.is_private() || v4.is_loopback() || v4.is_link_local()
+                                || v4.is_broadcast() || v4.is_unspecified() ,
+                            std::net::IpAddr::V6(v6) =>
+                                v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+                                || v6.is_unspecified(),
+                        })
+                });
+                if resolved.scheme() != "https" || dependency.cors_required || unsafe_host
                     || !resolved.username().is_empty() || resolved.password().is_some()
                 {
                     return Err(NativeRuntimeError::Resource(ResourceError::Denied));
@@ -224,6 +239,7 @@ mod tests {
     #[cfg(feature = "desktop-preview")]
     struct CssFixtureBroker {
         cross_origin: bool,
+        cors_required: bool,
     }
 
     #[cfg(feature = "desktop-preview")]
@@ -231,13 +247,16 @@ mod tests {
         fn fetch(&mut self, request: &ResourceRequest) -> Result<ResourceResponse, ResourceError> {
             let (media_type, body) = match request.kind {
                 ResourceKind::Document => (
-                    "text/html", if self.cross_origin {
-                        "<html><head><link rel='stylesheet' href='https://evil.invalid/style.css'></head><body><p>Fixture</p></body></html>"
+                    "text/html", if self.cross_origin && self.cors_required {
+                        "<html><head><link rel='stylesheet' crossorigin='anonymous' href='https://assets.example.org/style.css'></head><body><p>Fixture</p></body></html>"
+                    } else if self.cross_origin {
+                        "<html><head><link rel='stylesheet' href='https://assets.example.org/style.css'></head><body><p>Fixture</p></body></html>"
                     } else {
                         "<html><head><link rel='stylesheet' href='/style.css'></head><body><p>Fixture</p></body></html>"
                     },
                 ),
-                ResourceKind::StyleSheet if request.target == "https://example.test/style.css" =>
+                ResourceKind::StyleSheet if request.target == "https://example.test/style.css"
+                    || request.target == "https://assets.example.org/style.css" =>
                     ("text/css", "p { font-size: 27px; }"),
                 _ => return Err(ResourceError::Denied),
             };
@@ -253,19 +272,26 @@ mod tests {
     #[cfg(feature = "desktop-preview")]
     #[test]
     fn broker_css_changes_native_frame_and_blocks_cross_origin() {
-        let mut enabled = NativeRuntime::new(CssFixtureBroker { cross_origin: false });
+        let mut enabled = NativeRuntime::new(CssFixtureBroker { cross_origin: false, cors_required: false });
         enabled.set_external_css_enabled(true);
         let styled = enabled.load("https://example.test/").unwrap();
         assert!(styled.execution.scene.commands.iter().any(|command|
             matches!(command, crate::native_scene::SceneCommand::Text { size_px, text, .. }
                 if text == "Fixture" && (*size_px - 27.0).abs() < 0.001)));
 
-        let mut disabled = NativeRuntime::new(CssFixtureBroker { cross_origin: false });
+        let mut disabled = NativeRuntime::new(CssFixtureBroker { cross_origin: false, cors_required: false });
         let plain = disabled.load("https://example.test/").unwrap();
         assert_ne!(styled.execution.evidence.execution_sha256,
             plain.execution.evidence.execution_sha256);
 
-        let mut denied = NativeRuntime::new(CssFixtureBroker { cross_origin: true });
+        let mut cross_origin = NativeRuntime::new(CssFixtureBroker { cross_origin: true, cors_required: false });
+        cross_origin.set_external_css_enabled(true);
+        let cross = cross_origin.load("https://example.test/").unwrap();
+        assert!(cross.execution.scene.commands.iter().any(|command|
+            matches!(command, crate::native_scene::SceneCommand::Text { size_px, text, .. }
+                if text == "Fixture" && (*size_px - 27.0).abs() < 0.001)));
+
+        let mut denied = NativeRuntime::new(CssFixtureBroker { cross_origin: true, cors_required: true });
         denied.set_external_css_enabled(true);
         assert!(matches!(denied.load("https://example.test/"),
             Err(NativeRuntimeError::Resource(ResourceError::Denied))));

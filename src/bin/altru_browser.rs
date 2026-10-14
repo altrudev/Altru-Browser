@@ -133,7 +133,9 @@ impl ResourceBroker for HttpsDocumentBroker {
                 })?;
                 let next = validate_https_url(next.as_str())?;
                 let redirect_allowed = if request.kind == ResourceKind::StyleSheet {
-                    next.origin() == current_url.origin()
+                    // Non-CORS classic stylesheet redirects may change HTTPS origins.
+                    // Each redirect is still validated, bounded and recorded.
+                    true
                 } else {
                     redirect_within_host_family(&current_url, &next)
                 };

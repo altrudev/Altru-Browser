@@ -8,6 +8,7 @@ pub struct NativeDependency {
     pub node: NodeId,
     pub kind: ResourceKind,
     pub reference: String,
+    pub cors_required: bool,
 }
 
 pub fn discover_dependencies(document: &NativeDocument) -> Vec<NativeDependency> {
@@ -46,6 +47,7 @@ pub fn discover_dependencies(document: &NativeDocument) -> Vec<NativeDependency>
                     node: node.id,
                     kind,
                     reference: reference.to_owned(),
+                    cors_required: tag == "link" && attr("crossorigin").is_some(),
                 });
             }
         }
@@ -66,6 +68,7 @@ mod tests {
         assert_eq!(deps.iter().map(|d| d.kind).collect::<Vec<_>>(),
             vec![ResourceKind::StyleSheet,ResourceKind::Font,ResourceKind::Image,ResourceKind::Script]);
         assert_eq!(deps[0].reference,"/site.css");
+        assert!(!deps[0].cors_required);
         assert_eq!(deps[2].reference,"/hero.png");
     }
     #[test]
