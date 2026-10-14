@@ -18,6 +18,7 @@ pub mod model;
 pub mod native_css;
 pub mod vendor_css;
 pub mod native_dom;
+pub mod native_dependencies;
 pub mod native_engine;
 pub mod native_html;
 pub mod native_invalidation;

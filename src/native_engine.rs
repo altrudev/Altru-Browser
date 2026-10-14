@@ -60,6 +60,7 @@ pub struct NativeExecutionEvidence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeExecution {
     pub document: NativeDocument,
+    pub dependencies: Vec<crate::native_dependencies::NativeDependency>,
     pub scene: Scene,
     pub artifact: String,
     pub evidence: NativeExecutionEvidence,
@@ -130,6 +131,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEngineError> {
     let document = parse_document(input)?;
+    let dependencies = crate::native_dependencies::discover_dependencies(&document);
     let compiled_styles =
         stylesheet_from_document_with_environment(&document, CapabilityEnvironment::default())?;
     let translation_material = compiled_styles
@@ -168,6 +170,7 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
 
     Ok(NativeExecution {
         document,
+        dependencies,
         scene,
         artifact,
         evidence,
