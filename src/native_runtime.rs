@@ -6,6 +6,8 @@
 use crate::browser_kernel::{BrowserKernel, NavigationError};
 use crate::engine_api::EngineAdapter;
 use crate::native_engine::{NativeEngineAdapter, NativeEngineError, NativeExecution};
+#[cfg(feature = "desktop-preview")]
+use crate::native_engine::execute_native_document_with_external_css;
 use crate::resource_api::{ResourceBroker, ResourceError, ResourceKind, ResourceRequest};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +43,7 @@ pub struct NativeRuntime<B: ResourceBroker> {
     broker: B,
     next_request_id: u64,
     fallback_policy: FallbackPolicy,
+    external_css_enabled: bool,
 }
 
 impl<B: ResourceBroker> NativeRuntime<B> {
@@ -51,7 +54,14 @@ impl<B: ResourceBroker> NativeRuntime<B> {
             broker,
             next_request_id: 0,
             fallback_policy: FallbackPolicy::Deny,
+            external_css_enabled: false,
         }
+    }
+
+    /// Explicit opt-in: externally fetched CSS must pass the broker's authorization.
+    /// Disabled by default until native visual acceptance succeeds.
+    pub fn set_external_css_enabled(&mut self, enabled: bool) {
+        self.external_css_enabled = enabled;
     }
 
     pub fn set_fallback_policy(&mut self, policy: FallbackPolicy) {
@@ -123,7 +133,58 @@ impl<B: ResourceBroker> NativeRuntime<B> {
 
         let source =
             String::from_utf8(response.body).map_err(|_| NativeRuntimeError::InvalidUtf8)?;
-        let execution = self.engine.execute(source).map_err(|error| {
+        #[cfg(feature = "desktop-preview")]
+        let external_css = if self.external_css_enabled {
+            let document = crate::native_html::parse_document(&source)
+                .map_err(|error| NativeRuntimeError::Engine(
+                    NativeEngineError::from(error)))?;
+            let mut css = String::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let base = url::Url::parse(&target)
+                .map_err(|_| NativeRuntimeError::Resource(ResourceError::Denied))?;
+            if base.scheme() != "https" {
+                return Err(NativeRuntimeError::Resource(ResourceError::Denied));
+            }
+            for dependency in crate::native_dependencies::discover_dependencies(&document) {
+                if dependency.kind != ResourceKind::StyleSheet { continue; }
+                let resolved = base.join(&dependency.reference)
+                    .map_err(|_| NativeRuntimeError::Resource(ResourceError::Denied))?;
+                if resolved.scheme() != "https" || resolved.origin() != base.origin()
+                    || !resolved.username().is_empty() || resolved.password().is_some()
+                {
+                    return Err(NativeRuntimeError::Resource(ResourceError::Denied));
+                }
+                if !seen.insert(resolved.to_string()) {continue;}
+                if seen.len() > 32 {return Err(NativeRuntimeError::Resource(ResourceError::Denied));}
+                self.next_request_id = self.next_request_id.saturating_add(1);
+                let response = self.broker.fetch(&ResourceRequest {
+                    request_id: self.next_request_id,
+                    target: resolved.into(),
+                    kind: ResourceKind::StyleSheet,
+                }).map_err(NativeRuntimeError::Resource)?;
+                if !(200..300).contains(&response.status) {
+                    return Err(NativeRuntimeError::HttpStatus(response.status));
+                }
+                if !response.media_type.to_ascii_lowercase().starts_with("text/css")
+                    || response.body.len() > 1_000_000 || css.len() + response.body.len() > 4_000_000
+                {
+                    return Err(NativeRuntimeError::Resource(ResourceError::Denied));
+                }
+                css.push_str(&String::from_utf8(response.body)
+                    .map_err(|_| NativeRuntimeError::InvalidUtf8)?);
+                css.push('\n');
+            }
+            css
+        } else { String::new() };
+        #[cfg(feature = "desktop-preview")]
+        let result = if self.external_css_enabled {
+            execute_native_document_with_external_css(&source, &external_css)
+        } else {
+            self.engine.execute(source)
+        };
+        #[cfg(not(feature = "desktop-preview"))]
+        let result = self.engine.execute(source);
+        let execution = result.map_err(|error| {
             match (&self.fallback_policy, &error) {
                 (FallbackPolicy::PermitVerifiedServo, NativeEngineError::Css(crate::native_css::CssError::UnsupportedSelector(_))) => {
                     // No verified Servo navigator is wired. Never claim success or
@@ -158,6 +219,56 @@ mod tests {
                 body: b"<html><body><p>Runtime fixture</p></body></html>".to_vec(),
             })
         }
+    }
+
+    #[cfg(feature = "desktop-preview")]
+    struct CssFixtureBroker {
+        cross_origin: bool,
+    }
+
+    #[cfg(feature = "desktop-preview")]
+    impl ResourceBroker for CssFixtureBroker {
+        fn fetch(&mut self, request: &ResourceRequest) -> Result<ResourceResponse, ResourceError> {
+            let (media_type, body) = match request.kind {
+                ResourceKind::Document => (
+                    "text/html", if self.cross_origin {
+                        "<html><head><link rel='stylesheet' href='https://evil.invalid/style.css'></head><body><p>Fixture</p></body></html>"
+                    } else {
+                        "<html><head><link rel='stylesheet' href='/style.css'></head><body><p>Fixture</p></body></html>"
+                    },
+                ),
+                ResourceKind::StyleSheet if request.target == "https://example.test/style.css" =>
+                    ("text/css", "p { font-size: 27px; }"),
+                _ => return Err(ResourceError::Denied),
+            };
+            Ok(ResourceResponse {
+                request_id: request.request_id,
+                status: 200,
+                media_type: media_type.into(),
+                body: body.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    #[cfg(feature = "desktop-preview")]
+    #[test]
+    fn broker_css_changes_native_frame_and_blocks_cross_origin() {
+        let mut enabled = NativeRuntime::new(CssFixtureBroker { cross_origin: false });
+        enabled.set_external_css_enabled(true);
+        let styled = enabled.load("https://example.test/").unwrap();
+        assert!(styled.execution.scene.commands.iter().any(|command|
+            matches!(command, crate::native_scene::SceneCommand::Text { size_px, text, .. }
+                if text == "Fixture" && (*size_px - 27.0).abs() < 0.001)));
+
+        let mut disabled = NativeRuntime::new(CssFixtureBroker { cross_origin: false });
+        let plain = disabled.load("https://example.test/").unwrap();
+        assert_ne!(styled.execution.evidence.execution_sha256,
+            plain.execution.evidence.execution_sha256);
+
+        let mut denied = NativeRuntime::new(CssFixtureBroker { cross_origin: true });
+        denied.set_external_css_enabled(true);
+        assert!(matches!(denied.load("https://example.test/"),
+            Err(NativeRuntimeError::Resource(ResourceError::Denied))));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use adaptive_web_engine_fabric::companion_observation::{
 use adaptive_web_engine_fabric::native_runtime::{NativePage, NativeRuntime, NativeRuntimeError};
 use adaptive_web_engine_fabric::native_scene::SceneCommand;
 use adaptive_web_engine_fabric::resource_api::{
-    ResourceBroker, ResourceError, ResourceRequest, ResourceResponse,
+    ResourceBroker, ResourceError, ResourceKind, ResourceRequest, ResourceResponse,
 };
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, Stroke, Vec2};
 
@@ -132,7 +132,12 @@ impl ResourceBroker for HttpsDocumentBroker {
                     ResourceError::Transport(format!("invalid redirect target: {error}"))
                 })?;
                 let next = validate_https_url(next.as_str())?;
-                if !redirect_within_host_family(&current_url, &next) {
+                let redirect_allowed = if request.kind == ResourceKind::StyleSheet {
+                    next.origin() == current_url.origin()
+                } else {
+                    redirect_within_host_family(&current_url, &next)
+                };
+                if !redirect_allowed {
                     return Err(ResourceError::Denied);
                 }
                 if !visited.insert(next.as_str().to_string()) {
@@ -162,9 +167,13 @@ impl ResourceBroker for HttpsDocumentBroker {
             .unwrap_or("application/octet-stream")
             .to_string();
 
-        if !(media_type.starts_with("text/html")
-            || media_type.starts_with("application/xhtml+xml")
-            || media_type.starts_with("text/plain"))
+        if !match request.kind {
+            ResourceKind::Document => media_type.starts_with("text/html")
+                || media_type.starts_with("application/xhtml+xml")
+                || media_type.starts_with("text/plain"),
+            ResourceKind::StyleSheet => media_type.starts_with("text/css"),
+            _ => false,
+        }
         {
             return Err(ResourceError::Transport(format!(
                 "top-level media type is not supported: {media_type}"

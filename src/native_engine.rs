@@ -130,10 +130,41 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEngineError> {
+    execute_native_document_with_external_css(input, "")
+}
+
+/// The broker supplies approved stylesheet bytes. The engine itself has no network access.
+/// Author stylesheet text is compiled before layout and bound to the execution evidence.
+pub fn execute_native_document_with_external_css(
+    input: &str,
+    external_css: &str,
+) -> Result<NativeExecution, NativeEngineError> {
     let document = parse_document(input)?;
     let dependencies = crate::native_dependencies::discover_dependencies(&document);
-    let compiled_styles =
+    let mut compiled_styles =
         stylesheet_from_document_with_environment(&document, CapabilityEnvironment::default())?;
+    if !external_css.is_empty() {
+        if external_css.len() > 4_000_000 {
+            return Err(NativeEngineError::Css(CssError::MalformedRule));
+        }
+        let external = crate::native_css::parse_stylesheet_with_environment(
+            external_css, CapabilityEnvironment::default()
+        )?;
+        // Preserve the external author rules ahead of embedded author rules, with
+        // monotonically increasing rule order for later source-order comparisons.
+        let offset = external.stylesheet.rules.len();
+        let mut rules = external.stylesheet.rules;
+        for mut rule in compiled_styles.stylesheet.rules {
+            rule.order += offset;
+            rules.push(rule);
+        }
+        compiled_styles.stylesheet.rules = rules;
+        compiled_styles.translations.extend(external.translations);
+        compiled_styles.canonical_source_sha256 = sha256(
+            format!("external-css-v1\n{}\ninline-css-v1\n{}", external_css,
+                compiled_styles.canonical_source_sha256).as_bytes()
+        );
+    }
     let translation_material = compiled_styles
         .translations
         .iter()
