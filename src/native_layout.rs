@@ -32,6 +32,12 @@ pub struct LayoutTree {
     pub epoch: u64,
 }
 
+#[derive(Debug, Clone)]
+enum FormattingItem {
+    Dom(NodeId),
+    Generated(String, f32),
+}
+
 fn first_text_descendant(document: &NativeDocument, node: NodeId) -> Option<NodeId> {
     let candidate = document.node(node)?;
     for child in &candidate.children {
@@ -379,38 +385,48 @@ fn layout_node(
             let child_x = x + style.padding_left_px;
             let child_width = (width - style.padding_left_px - style.padding_right_px).max(1.0);
 
-            for target in [AcirPseudoElement::Before, AcirPseudoElement::After] {
-                if resolve_generated_pseudo_for_element(
-                    document,
-                    node,
-                    &styles[node],
-                    sheet,
-                    &InteractionSnapshot::default(),
-                    target,
-                )?
-                .is_some()
-                {
-                    return Err(crate::native_css::CssError::UnsupportedLayout(
-                        "generated pseudo content inside flex/grid formatting context".into(),
-                    ));
+            // Generated ::before/::after are anonymous flex/grid items in CSS,
+            // ordered around DOM children. They must contribute to geometry.
+            let mut items = Vec::new();
+            for target in [AcirPseudoElement::Before] {
+                if let Some(generated) = resolve_generated_pseudo_for_element(
+                    document, node, &styles[node], sheet, &InteractionSnapshot::default(), target
+                )? {
+                    if !generated.content.is_empty() {
+                        items.push(FormattingItem::Generated(generated.content,
+                            generated.computed.font_size_px));
+                    }
                 }
             }
-
-            let visible_children = candidate
-                .children
-                .iter()
-                .copied()
-                .filter(|child| {
-                    styles
-                        .get(*child)
-                        .map(|resolved| resolved.computed.display != Display::None)
-                        .unwrap_or(true)
-                })
-                .collect::<Vec<_>>();
+            for child in &candidate.children {
+                if styles.get(*child)
+                    .map(|resolved| resolved.computed.display != Display::None)
+                    .unwrap_or(true)
+                {
+                    items.push(FormattingItem::Dom(*child));
+                }
+            }
+            if let Some(generated) = resolve_generated_pseudo_for_element(
+                document, node, &styles[node], sheet, &InteractionSnapshot::default(),
+                AcirPseudoElement::After
+            )? {
+                if !generated.content.is_empty() {
+                    items.push(FormattingItem::Generated(
+                        generated.content, generated.computed.font_size_px));
+                }
+            }
+            let visible_children = items.iter().filter_map(|item| {
+                if let FormattingItem::Dom(id) = item { Some(*id) } else { None }
+            }).collect::<Vec<_>>();
 
             // Explicit-font H3 path: tightly bounded single-row text-only grids.
             // No implicit host font lookup or silent semantic approximation.
             if style.display.is_grid_context() && style.grid_track_weights[..usize::from(style.grid_columns)].iter().any(|w| *w != 1000) {
+                if items.iter().any(|item| matches!(item, FormattingItem::Generated(..))) {
+                    return Err(crate::native_css::CssError::UnsupportedLayout(
+                        "mixed grid with generated pseudo item requires intrinsic measurement".into()
+                    ));
+                }
                 let Some(font_bytes) = resolved_font else {
                     return Err(crate::native_css::CssError::UnsupportedLayout("mixed grid needs explicitly resolved font".into()));
                 };
@@ -482,10 +498,13 @@ fn layout_node(
                 mode,
                 width: child_width,
                 gap: style.gap_px,
-                children: visible_children
+                children: items
                     .iter()
-                    .map(|child| GeometryChild {
-                        min_height: estimate_subtree_height(document, styles, *child),
+                    .map(|item| GeometryChild {
+                        min_height: match item {
+                            FormattingItem::Dom(child) => estimate_subtree_height(document, styles, *child),
+                            FormattingItem::Generated(_, font_size) => (font_size * 1.35).ceil(),
+                        },
                     })
                     .collect(),
             };
@@ -493,20 +512,27 @@ fn layout_node(
                 solve_geometry(&request).map_err(crate::native_css::CssError::UnsupportedLayout)?;
             let origin_y = *y;
             let mut content_bottom = origin_y;
-            for (child, geometry_box) in visible_children.iter().zip(geometry.children.iter()) {
+            for (item, geometry_box) in items.iter().zip(geometry.children.iter()) {
                 let mut local_y = origin_y + geometry_box.y;
-                layout_node(
-                    document,
-                    styles,
-                    first_letter_sizes,
-                    sheet,
-                    *child,
-                    child_x + geometry_box.x,
-                    geometry_box.width.max(1.0),
-                    &mut local_y,
-                    fragments,
-                    resolved_font,
-                )?;
+                match item {
+                    FormattingItem::Dom(child) => layout_node(
+                        document, styles, first_letter_sizes, sheet, *child,
+                        child_x + geometry_box.x, geometry_box.width.max(1.0),
+                        &mut local_y, fragments, resolved_font,
+                    )?,
+                    FormattingItem::Generated(content, font_size) => {
+                        fragments.push(LayoutFragment {
+                            node,
+                            x: child_x + geometry_box.x,
+                            y: local_y,
+                            width: geometry_box.width.max(1.0),
+                            height: (font_size * 1.35).ceil(),
+                            font_size_px: *font_size,
+                            text: Some(content.clone()),
+                        });
+                        local_y += (font_size * 1.35).ceil();
+                    }
+                }
                 content_bottom = content_bottom
                     .max(local_y)
                     .max(origin_y + geometry_box.y + geometry_box.height);
@@ -649,6 +675,22 @@ mod tests {
         let sheet = parse_stylesheet(".lead { font-size: 22px; }").unwrap();
         let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
         assert_eq!(layout.fragments[0].font_size_px, 22.0);
+    }
+
+    #[cfg(feature = "taffy-layout")]
+    #[test]
+    fn generated_items_contribute_to_flex_and_grid_geometry() {
+        for mode in ["flex", "grid"] {
+            let html = "<html><body><div class='box'><span>A</span><span>B</span></div></body></html>";
+            let document = parse_document(html).unwrap();
+            let css = format!(".box {{ display: {mode}; gap: 8px; }} .box:before {{ content: 'First'; }} .box:after {{ content: 'Last'; }}");
+            let sheet = parse_stylesheet(&css).unwrap();
+            let layout = layout_document_with_styles(&document, &sheet, 320.0).unwrap();
+            let texts = layout.fragments.iter().filter_map(|f| f.text.as_deref()).collect::<Vec<_>>();
+            assert_eq!(texts, vec!["First", "A", "B", "Last"], "{mode}");
+            assert!(layout.fragments[0].width > 0.0);
+            assert!(layout.fragments[3].x.is_finite());
+        }
     }
 
     #[test]
