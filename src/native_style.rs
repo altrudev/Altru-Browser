@@ -57,6 +57,8 @@ impl Display {
 pub enum FlexDirection {
     Row,
     Column,
+    RowReverse,
+    ColumnReverse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,6 +74,8 @@ pub struct ComputedStyle {
     pub flex_direction: FlexDirection,
     pub gap_px: f32,
     pub grid_columns: u16,
+    /// Zero represents Auto; other values are positive fractional milliweights.
+    pub grid_track_weights: [u32; 12],
 }
 
 impl ComputedStyle {
@@ -88,6 +92,7 @@ impl ComputedStyle {
             flex_direction: FlexDirection::Row,
             gap_px: 0.0,
             grid_columns: 1,
+            grid_track_weights: [1000; 12],
         }
     }
 }
@@ -96,6 +101,7 @@ impl ComputedStyle {
 pub struct ResolvedStyle {
     pub computed: ComputedStyle,
     pub custom_properties: BTreeMap<String, String>,
+    pub root_font_size_px: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +115,7 @@ impl ResolvedStyle {
         Self {
             computed: ComputedStyle::initial(),
             custom_properties: BTreeMap::new(),
+            root_font_size_px: 16.0,
         }
     }
 }
@@ -185,32 +192,129 @@ fn parse_custom_px(property: &str, value: &str) -> Result<f32, CssError> {
     Ok(parsed)
 }
 
+/// Resolve CSS custom properties with bounded recursion, cycle detection and
+/// nested fallback syntax. Undefined variables never authorize external fetches.
+fn substitute_custom_value(
+    expression: &str,
+    custom: &BTreeMap<String, String>,
+    stack: &mut Vec<String>,
+) -> Result<String, CssError> {
+    if stack.len() >= 32 {
+        return Err(CssError::InvalidValue { property: "var".into(), value: "recursion limit".into() });
+    }
+    let mut output = String::new();
+    let mut rest = expression;
+    while let Some(start) = rest.find("var(") {
+        output.push_str(&rest[..start]);
+        let tail = &rest[start + 4..];
+        let mut depth = 1usize;
+        let mut close = None;
+        for (i, ch) in tail.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 { close = Some(i); break; }
+                }
+                _ => {}
+            }
+        }
+        let end = close.ok_or_else(|| CssError::InvalidValue {
+            property: "var".into(), value: expression.into(),
+        })?;
+        let contents = &tail[..end];
+        let (key, fallback) = contents.split_once(',').map_or((contents, None), |(a,b)| (a,Some(b)));
+        let key = key.trim();
+        if !key.starts_with("--") || key.len() < 3 {
+            return Err(CssError::InvalidValue { property: "var".into(), value: expression.into() });
+        }
+        let resolved = if stack.iter().any(|n| n == key) {
+            None
+        } else if let Some(value) = custom.get(key) {
+            stack.push(key.to_owned());
+            let value = substitute_custom_value(value, custom, stack);
+            stack.pop();
+            value.ok()
+        } else {
+            None
+        };
+        if let Some(value) = resolved {
+            output.push_str(&value);
+        } else if let Some(fallback) = fallback {
+            output.push_str(&substitute_custom_value(fallback.trim(), custom, stack)?);
+        } else {
+            return Err(CssError::UnresolvedCustomProperty(key.into()));
+        }
+        rest = &tail[end + 1..];
+    }
+    output.push_str(rest);
+    Ok(output)
+}
+
 fn resolve_value(
     declaration: &Declaration,
     custom_properties: &BTreeMap<String, String>,
     parent_font_size_px: f32,
     current_font_size_px: f32,
+    root_font_size_px: f32,
 ) -> Result<CssValue, CssError> {
     match &declaration.value {
-        CssValue::Var(name) => {
-            let raw = custom_properties
-                .get(name)
-                .ok_or_else(|| CssError::UnresolvedCustomProperty(name.clone()))?;
-            match declaration.property.as_str() {
-                "font-size" | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
-                | "padding-bottom" | "padding-left" | "gap" => {
-                    Ok(CssValue::Px(parse_custom_px(&declaration.property, raw)?))
-                }
-                _ => Err(CssError::InvalidValue {
-                    property: declaration.property.clone(),
-                    value: format!("var({name})"),
-                }),
+        CssValue::Var(name) | CssValue::DeferredLength(name) => {
+            let expression = if matches!(declaration.value, CssValue::Var(_)) {
+                format!("var({name})")
+            } else { name.clone() };
+            let expanded = substitute_custom_value(
+                &expression, custom_properties, &mut Vec::new(),
+            )?;
+            let expanded = expanded.trim();
+            if let Some(compiled) = crate::capability_compiler::compile_linear_length_capability(
+                expanded,
+                if declaration.property == "font-size" { crate::capability_ir::AcirLengthBasis::ParentFontSize }
+                else { crate::capability_ir::AcirLengthBasis::CurrentFontSize },
+            )? {
+                return Ok(CssValue::Px(compiled.value.resolve_px_with_root(
+                    parent_font_size_px, current_font_size_px, root_font_size_px,
+                )));
+            }
+            if let Some(compiled) = crate::capability_compiler::compile_root_font_length_capability(expanded)? {
+                Ok(CssValue::Px(compiled.value.resolve_px_with_root(
+                    parent_font_size_px, current_font_size_px, root_font_size_px,
+                )))
+            } else if let Some(compiled) = crate::capability_compiler::compile_current_font_length_capability(expanded)? {
+                Ok(CssValue::Px(compiled.value.resolve_px_with_root(
+                    parent_font_size_px, current_font_size_px, root_font_size_px,
+                )))
+            } else if let Some(compiled) = crate::capability_compiler::compile_font_size_capability(expanded)? {
+                Ok(CssValue::Px(compiled.value.resolve_px_with_root(
+                    parent_font_size_px, current_font_size_px, root_font_size_px,
+                )))
+            } else {
+                Ok(CssValue::Px(parse_custom_px(&declaration.property, expanded)?))
             }
         }
         CssValue::RelativeLength(value) => Ok(CssValue::Px(
-            value.resolve_px(parent_font_size_px, current_font_size_px),
+            value.resolve_px_with_root(parent_font_size_px, current_font_size_px, root_font_size_px),
+        )),
+        CssValue::LinearLength(value) => Ok(CssValue::Px(
+            value.resolve_px_with_root(parent_font_size_px, current_font_size_px, root_font_size_px),
         )),
         other => Ok(other.clone()),
+    }
+}
+
+// CSS variables invalid at computed-value time resolve to unset, not page failure.
+fn resolve_computed_declaration(
+    declaration: &Declaration,
+    custom: &BTreeMap<String, String>,
+    parent_font: f32,
+    current_font: f32,
+    root_font: f32,
+) -> Result<CssValue, CssError> {
+    match resolve_value(declaration, custom, parent_font, current_font, root_font) {
+        Ok(value) => Ok(value),
+        Err(_) if matches!(declaration.value, CssValue::Var(_) | CssValue::DeferredLength(_)) =>
+            Ok(CssValue::Global(CssGlobalKeyword::Unset)),
+        Err(error) => Err(error),
     }
 }
 
@@ -226,7 +330,7 @@ fn assign_property_from(
     match property {
         "display" => target.display = source.display,
         "flex-direction" => target.flex_direction = source.flex_direction,
-        "grid-template-columns" => target.grid_columns = source.grid_columns,
+        "grid-template-columns" => { target.grid_columns = source.grid_columns; target.grid_track_weights = source.grid_track_weights; },
         "gap" => target.gap_px = source.gap_px,
         "font-size" => target.font_size_px = source.font_size_px,
         "margin-top" => target.margin_before_px = source.margin_before_px,
@@ -295,10 +399,25 @@ fn apply_value(
         ("flex-direction", CssValue::Keyword(value)) => {
             style.flex_direction = match value.as_str() {
                 "column" => FlexDirection::Column,
+                "row-reverse" => FlexDirection::RowReverse,
+                "column-reverse" => FlexDirection::ColumnReverse,
                 _ => FlexDirection::Row,
             };
         }
-        ("grid-template-columns", CssValue::GridColumns(value)) => style.grid_columns = *value,
+        ("grid-template-columns", CssValue::GridColumns(value)) => {
+            style.grid_columns = *value;
+            style.grid_track_weights = [1000; 12];
+        }
+        ("grid-template-columns", CssValue::GridTracks(value)) => {
+            style.grid_columns = value.columns.len() as u16;
+            style.grid_track_weights = [1000; 12];
+            for (index, track) in value.columns.iter().enumerate() {
+                style.grid_track_weights[index] = match track {
+                    crate::capability_ir::AcirGridTrack::Auto => 0,
+                    crate::capability_ir::AcirGridTrack::FractionMilli(weight) => *weight,
+                };
+            }
+        },
         ("gap", CssValue::Px(value)) => style.gap_px = *value,
         ("font-size", CssValue::Px(value)) => style.font_size_px = *value,
         ("margin-top", CssValue::Px(value)) => style.margin_before_px = *value,
@@ -348,6 +467,10 @@ fn resolve_element_style(
         declarations.extend(parse_declarations(inline)?);
     }
 
+    // Stable author cascade: importance overrides non-important declarations,
+    // while specificity, source order, and inline priority stay ordered within each tier.
+    declarations.sort_by_key(|declaration| declaration.important);
+
     let mut custom_properties = parent_style.custom_properties.clone();
     for declaration in &declarations {
         if declaration.property.starts_with("--")
@@ -360,11 +483,12 @@ fn resolve_element_style(
     // Resolve font-size first because other `em` lengths depend on the element's
     // final computed font size, not declaration order.
     for declaration in declarations.iter().filter(|declaration| declaration.property == "font-size") {
-        let value = resolve_value(
+        let value = resolve_computed_declaration(
             declaration,
             &custom_properties,
             parent_style.computed.font_size_px,
             computed.font_size_px,
+            parent_style.root_font_size_px,
         )?;
         apply_value(
             &mut computed,
@@ -378,11 +502,12 @@ fn resolve_element_style(
         if declaration.property.starts_with("--") || declaration.property == "font-size" {
             continue;
         }
-        let value = resolve_value(
+        let value = resolve_computed_declaration(
             declaration,
             &custom_properties,
             parent_style.computed.font_size_px,
             computed.font_size_px,
+            parent_style.root_font_size_px,
         )?;
         apply_value(
             &mut computed,
@@ -393,6 +518,7 @@ fn resolve_element_style(
     }
 
     Ok(ResolvedStyle {
+        root_font_size_px: if matches!(&candidate.kind, NodeKind::Element { tag } if tag == "html") { computed.font_size_px } else { parent_style.root_font_size_px },
         computed,
         custom_properties,
     })
@@ -422,35 +548,39 @@ pub fn resolve_pseudo_style_for_element(
     }
 
     matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+    let mut declarations = matching.iter()
+        .flat_map(|rule| rule.declarations.iter())
+        .collect::<Vec<_>>();
+    declarations.sort_by_key(|declaration| declaration.important);
     let mut computed = base_style.computed;
     let mut custom_properties = base_style.custom_properties.clone();
 
-    for rule in matching {
-        for declaration in &rule.declarations {
-            if declaration.property.starts_with("--") {
-                if let CssValue::Raw(value) = &declaration.value {
-                    custom_properties.insert(declaration.property.clone(), value.clone());
-                }
-                continue;
+    for declaration in declarations {
+        if declaration.property.starts_with("--") {
+            if let CssValue::Raw(value) = &declaration.value {
+                custom_properties.insert(declaration.property.clone(), value.clone());
             }
-            let value = resolve_value(
-                declaration,
-                &custom_properties,
-                base_style.computed.font_size_px,
-                computed.font_size_px,
-            )?;
-            apply_value(
-                &mut computed,
-                &base_style.computed,
-                &declaration.property,
-                &value,
-            );
+            continue;
         }
+        let value = resolve_computed_declaration(
+            declaration,
+            &custom_properties,
+            base_style.computed.font_size_px,
+            computed.font_size_px,
+            base_style.root_font_size_px,
+        )?;
+        apply_value(
+            &mut computed,
+            &base_style.computed,
+            &declaration.property,
+            &value,
+        );
     }
 
     Ok(Some(ResolvedStyle {
         computed,
         custom_properties,
+        root_font_size_px: base_style.root_font_size_px,
     }))
 }
 
@@ -482,46 +612,49 @@ pub fn resolve_generated_pseudo_for_element(
     }
 
     matching.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+    let mut declarations = matching.iter()
+        .flat_map(|rule| rule.declarations.iter())
+        .collect::<Vec<_>>();
+    declarations.sort_by_key(|declaration| declaration.important);
     let mut computed = base_style.computed;
     let mut custom_properties = base_style.custom_properties.clone();
     let mut content: Option<String> = None;
 
-    for rule in matching {
-        for declaration in &rule.declarations {
-            if declaration.property.starts_with("--") {
-                if let CssValue::Raw(value) = &declaration.value {
-                    custom_properties.insert(declaration.property.clone(), value.clone());
-                }
-                continue;
+    for declaration in declarations {
+        if declaration.property.starts_with("--") {
+            if let CssValue::Raw(value) = &declaration.value {
+                custom_properties.insert(declaration.property.clone(), value.clone());
             }
-
-            if declaration.property == "content" {
-                match &declaration.value {
-                    CssValue::Content(value) => content = value.clone(),
-                    CssValue::UnsupportedContent(value) => {
-                        return Err(CssError::InvalidValue {
-                            property: "content".into(),
-                            value: value.clone(),
-                        });
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            let value = resolve_value(
-                declaration,
-                &custom_properties,
-                base_style.computed.font_size_px,
-                computed.font_size_px,
-            )?;
-            apply_value(
-                &mut computed,
-                &base_style.computed,
-                &declaration.property,
-                &value,
-            );
+            continue;
         }
+
+        if declaration.property == "content" {
+            match &declaration.value {
+                CssValue::Content(value) => content = value.clone(),
+                CssValue::UnsupportedContent(value) => {
+                    return Err(CssError::InvalidValue {
+                        property: "content".into(),
+                        value: value.clone(),
+                    });
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        let value = resolve_computed_declaration(
+            declaration,
+            &custom_properties,
+            base_style.computed.font_size_px,
+            computed.font_size_px,
+            base_style.root_font_size_px,
+        )?;
+        apply_value(
+            &mut computed,
+            &base_style.computed,
+            &declaration.property,
+            &value,
+        );
     }
 
     Ok(content.map(|content| ResolvedGeneratedPseudo { computed, content }))
@@ -553,6 +686,7 @@ pub fn resolve_styles_with_interaction(
                 inherited.computed.font_size_px = parent_style.computed.font_size_px;
                 inherited.computed.display = parent_style.computed.display;
                 inherited.custom_properties = parent_style.custom_properties.clone();
+                inherited.root_font_size_px = parent_style.root_font_size_px;
                 inherited
             }
             NodeKind::Element { .. } => {
@@ -591,6 +725,99 @@ mod tests {
     use super::*;
     use crate::native_css::parse_stylesheet;
     use crate::native_html::parse_document;
+
+    #[test]
+    fn calc_with_nested_variables_resolves_through_canonical_length_path() {
+        let document = parse_document("<html><body><p class='x'>Length</p></body></html>").unwrap();
+        let css = "html { font-size: 20px; --size: 0.667em; --offset: 2px; } .x { font-size: 18px; padding-top: calc(var(--size) + var(--offset)); margin-top: calc(var(--missing, 1em) + 2px); }";
+        let sheet = parse_stylesheet(css).unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let node = document.nodes().iter().find(|n| document.attribute(n.id, "class") == Some("x")).unwrap();
+        assert!((styles[node.id].computed.padding_top_px - 14.006).abs() < 0.001);
+        assert!((styles[node.id].computed.margin_before_px - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn nested_custom_properties_fallback_cycles_and_limits() {
+        let mut values = BTreeMap::new();
+        values.insert("--a".into(), "var(--b)".into());
+        values.insert("--b".into(), "2.25rem".into());
+        assert_eq!(substitute_custom_value("var(--a)", &values, &mut Vec::new()).unwrap(), "2.25rem");
+        assert_eq!(substitute_custom_value("var(--absent, var(--b))", &values, &mut Vec::new()).unwrap(), "2.25rem");
+        values.insert("--b".into(), "var(--a)".into());
+        assert!(substitute_custom_value("var(--a)", &values, &mut Vec::new()).is_err());
+        assert_eq!(substitute_custom_value("var(--a, 14px)", &values, &mut Vec::new()).unwrap(), "14px");
+        assert!(substitute_custom_value("var(--a, var(--missing))", &values, &mut Vec::new()).is_err());
+        assert!(substitute_custom_value("var(--a", &values, &mut Vec::new()).is_err());
+        assert!(substitute_custom_value("var(bad)", &values, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn custom_property_rem_uses_root_font_size() {
+        let document = parse_document("<html><body><p class='x'>Variable rem</p></body></html>").unwrap();
+        let sheet = parse_stylesheet("html { font-size: 24px; --space: 2.25rem; } .x { margin-top: var(--space); }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let p = document.nodes().iter().find(|n| document.attribute(n.id, "class") == Some("x")).unwrap();
+        assert!((styles[p.id].computed.margin_before_px - 54.0).abs() < 0.001);
+        assert_eq!(styles[p.id].root_font_size_px, 24.0);
+    }
+
+    #[test]
+    fn rem_tracks_computed_html_root_font_not_parent_font() {
+        let document = parse_document("<html><body><div class='parent'><p class='child'>Root unit</p></div></body></html>").unwrap();
+        let sheet = parse_stylesheet("html { font-size: 20px; } .parent { font-size: 30px; } .child { margin-top: 2.25rem; font-size: 1.5rem; }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let child = document.nodes().iter().find(|node| document.attribute(node.id, "class") == Some("child")).unwrap();
+        assert!((styles[child.id].computed.margin_before_px - 45.0).abs() < 0.001);
+        assert!((styles[child.id].computed.font_size_px - 30.0).abs() < 0.001);
+        assert_eq!(styles[child.id].root_font_size_px, 20.0);
+        let changed = parse_stylesheet("html { font-size: 24px; } .parent { font-size: 30px; } .child { margin-top: 2.25rem; font-size: 1.5rem; }").unwrap();
+        let updated = resolve_styles(&document, &changed).unwrap();
+        assert!((updated[child.id].computed.margin_before_px - 54.0).abs() < 0.001);
+        assert!((updated[child.id].computed.font_size_px - 36.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn important_author_rule_overrides_higher_specificity_and_inline_normal() {
+        let document = parse_document(
+            "<html><body><p id='hero' class='lead' style='font-size: 40px'>Important</p></body></html>"
+        ).unwrap();
+        let sheet = parse_stylesheet(
+            "#hero { font-size: 50px; } .lead { font-size: 20px !important; }"
+        ).unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let p = document.nodes().iter()
+            .find(|node| document.attribute(node.id, "id") == Some("hero")).unwrap();
+        assert_eq!(styles[p.id].computed.font_size_px, 20.0);
+    }
+
+    #[test]
+    fn inline_important_takes_priority_over_stylesheet_important() {
+        let document = parse_document(
+            "<html><body><p class='lead' style='font-size: 24px !important'>Important</p></body></html>"
+        ).unwrap();
+        let sheet = parse_stylesheet(".lead { font-size: 20px!important; }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let p = document.nodes().iter()
+            .find(|node| document.attribute(node.id, "class") == Some("lead")).unwrap();
+        assert_eq!(styles[p.id].computed.font_size_px, 24.0);
+    }
+
+    #[test]
+    fn linear_calc_uses_correct_current_and_parent_font_bases() {
+        let document = parse_document(
+            "<html><body><div class='parent'><p class='child'>Native math</p></div></body></html>"
+        ).unwrap();
+        let sheet = parse_stylesheet(
+            ".parent { font-size: 20px; } .child { padding-top: calc(0.667em + 2px); font-size: calc(0.5em + 2px); }"
+        ).unwrap();
+        let resolved = resolve_styles(&document, &sheet).unwrap();
+        let child = document.nodes().iter()
+            .find(|n| document.attribute(n.id, "class") == Some("child"))
+            .unwrap();
+        assert!((resolved[child.id].computed.font_size_px - 12.0).abs() < 0.001);
+        assert!((resolved[child.id].computed.padding_top_px - 10.004).abs() < 0.001);
+    }
 
     #[test]
     fn heading_style_is_engine_owned() {
@@ -956,10 +1183,10 @@ mod tests {
     #[test]
     fn unresolved_custom_property_fails_closed() {
         let document = parse_document("<html><body><p class=\"x\">X</p></body></html>").unwrap();
-        let sheet = parse_stylesheet(".x { font-size: var(--missing); }").unwrap();
-        assert!(matches!(
-            resolve_styles(&document, &sheet),
-            Err(CssError::UnresolvedCustomProperty(name)) if name == "--missing"
-        ));
+        let sheet = parse_stylesheet("html { font-size: 24px; } .x { font-size: 28px; font-size: var(--missing); margin-top: 20px; margin-top: var(--missing); }").unwrap();
+        let styles = resolve_styles(&document, &sheet).unwrap();
+        let p = document.nodes().iter().find(|n| document.attribute(n.id, "class") == Some("x")).unwrap();
+        assert_eq!(styles[p.id].computed.font_size_px, 24.0);
+        assert_eq!(styles[p.id].computed.margin_before_px, 0.0);
     }
 }

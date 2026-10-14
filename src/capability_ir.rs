@@ -206,6 +206,7 @@ impl AcirGridTrackList {
 pub enum AcirLengthBasis {
     ParentFontSize,
     CurrentFontSize,
+    RootFontSize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,11 +217,35 @@ pub struct AcirRelativeLength {
     pub basis: AcirLengthBasis,
 }
 
+/// Bounded linear CSS calc: nonnegative font-relative factor plus pixel offset.
+/// Both operands use exact thousandths, never unchecked floating-point source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcirLinearLength {
+    pub font: AcirRelativeLength,
+    pub pixel_milli_offset: u32,
+}
+
+impl AcirLinearLength {
+    pub fn resolve_px(self, parent_font_size_px: f32, current_font_size_px: f32) -> f32 {
+        self.resolve_px_with_root(parent_font_size_px, current_font_size_px, 16.0)
+    }
+
+    pub fn resolve_px_with_root(self, parent_font_size_px: f32, current_font_size_px: f32, root_font_size_px: f32) -> f32 {
+        self.font.resolve_px_with_root(parent_font_size_px, current_font_size_px, root_font_size_px)
+            + self.pixel_milli_offset as f32 / 1_000.0
+    }
+}
+
 impl AcirRelativeLength {
     pub fn resolve_px(self, parent_font_size_px: f32, current_font_size_px: f32) -> f32 {
+        self.resolve_px_with_root(parent_font_size_px, current_font_size_px, 16.0)
+    }
+
+    pub fn resolve_px_with_root(self, parent_font_size_px: f32, current_font_size_px: f32, root_font_size_px: f32) -> f32 {
         let basis = match self.basis {
             AcirLengthBasis::ParentFontSize => parent_font_size_px,
             AcirLengthBasis::CurrentFontSize => current_font_size_px,
+            AcirLengthBasis::RootFontSize => root_font_size_px,
         };
         basis * (self.milli_factor as f32 / 1_000.0)
     }

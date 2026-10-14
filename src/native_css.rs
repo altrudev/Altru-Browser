@@ -4,15 +4,15 @@
 //! closed; unknown properties follow CSS error handling and are ignored.
 
 use crate::capability_compiler::{
-    CapabilityCompilerError, TranslationReceipt, compile_current_font_length_capability,
-    compile_font_size_capability, compile_grid_track_capability, compile_pseudo_element_capability,
+    CapabilityCompilerError, TranslationReceipt, compile_direct_has_capability, compile_current_font_length_capability,
+    compile_font_size_capability, compile_grid_track_capability, compile_grid_track_syntax, compile_pseudo_element_capability,
     compile_selector_boolean_capability, compile_selector_capability,
     compile_selector_list_capability, compile_selector_state_capability,
-    compile_selector_structural_capability, compile_stylesheet_capabilities,
-    compile_zero_length_capability,
+    compile_selector_structural_capability, compile_stylesheet_capabilities, compile_linear_length_capability, compile_gap_zero_pair_capability,
+    compile_zero_length_capability, compile_root_font_length_capability,
 };
 use crate::capability_ir::{
-    AcirInteractionPredicate, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
+    AcirGridTrackList, AcirInteractionPredicate, AcirLinearLength, AcirLengthBasis, AcirPseudoElement, AcirRelativeLength, AcirSelectorBoolean,
     AcirSelectorRelation, AcirStructuralPredicate, CapabilityEnvironment,
 };
 use crate::interaction_state::InteractionSnapshot;
@@ -67,6 +67,7 @@ pub struct Selector {
     pub where_any_of: Vec<Selector>,
     pub none_of: Vec<Selector>,
     pub ancestor: Option<(AcirSelectorRelation, Box<Selector>)>,
+    pub has_direct_child_nth_last: Option<u32>,
 }
 
 impl Selector {
@@ -77,7 +78,8 @@ impl Selector {
                 + self.attributes.len()
                 + self.states.len()
                 + self.structural.len()
-                + usize::from(self.root))
+                + usize::from(self.root)
+                + usize::from(self.has_direct_child_nth_last.is_some()))
                 .min(u16::MAX as usize) as u16,
             (u16::from(self.tag.is_some()) + u16::from(self.pseudo_element.is_some())),
         );
@@ -254,6 +256,13 @@ impl Selector {
             }
         }
 
+        if let Some(nth) = self.has_direct_child_nth_last {
+            let children = document.element_children(node);
+            if children.len() != nth as usize {
+                return false;
+            }
+        }
+
         if let Some((relation, related)) = &self.ancestor {
             let matched = match relation {
                 AcirSelectorRelation::Descendant => document
@@ -292,12 +301,16 @@ pub enum CssValue {
     Display(String),
     Keyword(String),
     GridColumns(u16),
+    GridTracks(AcirGridTrackList),
     Global(CssGlobalKeyword),
     Px(f32),
     RelativeLength(AcirRelativeLength),
+    LinearLength(AcirLinearLength),
     Content(Option<String>),
     UnsupportedContent(String),
     Var(String),
+    /// Canonical expression awaiting computed-value-time variable substitution.
+    DeferredLength(String),
     Raw(String),
 }
 
@@ -305,6 +318,8 @@ pub enum CssValue {
 pub struct Declaration {
     pub property: String,
     pub value: CssValue,
+    /// Author-origin cascade importance, preserved independently from value parsing.
+    pub important: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -322,6 +337,9 @@ pub struct StyleSheet {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledStyleSheet {
     pub stylesheet: StyleSheet,
+    /// Source-preserving canonical rule/value tree used to validate native lowering.
+    pub canonical: crate::css_canonical::CanonicalStylesheet,
+    pub canonical_source_sha256: String,
     pub translations: Vec<TranslationReceipt>,
 }
 
@@ -464,7 +482,6 @@ fn simple_selector_has_top_level_pseudo_or_space(input: &str) -> Result<bool, Cs
 fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty()
-        || input.trim_start().starts_with('*')
         || simple_selector_has_top_level_pseudo_or_space(input)?
     {
         return Err(CssError::UnsupportedSelector(input.into()));
@@ -483,10 +500,13 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         where_any_of: Vec::new(),
         none_of: Vec::new(),
         ancestor: None,
+        has_direct_child_nth_last: None,
     };
     let mut cursor = 0usize;
 
-    if !matches!(input.as_bytes().first(), Some(b'.' | b'#' | b'[')) {
+    if input.starts_with('*') {
+        cursor = 1;
+    } else if !matches!(input.as_bytes().first(), Some(b'.' | b'#' | b'[')) {
         let end = input.find(['.', '#', '[']).unwrap_or(input.len());
         let tag = input[..end].trim();
         if tag.is_empty() || tag.chars().any(char::is_whitespace) {
@@ -535,6 +555,7 @@ fn parse_simple_selector(input: &str) -> Result<Selector, CssError> {
         && selector.classes.is_empty()
         && selector.attributes.is_empty()
         && !selector.root
+        && !input.starts_with('*')
     {
         return Err(CssError::UnsupportedSelector(input.into()));
     }
@@ -546,6 +567,17 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
     let input = input.trim();
     if input.is_empty() {
         return Err(CssError::UnsupportedSelector(input.into()));
+    }
+    // Universal type selectors are zero-specificity and match elements only.
+    // Preserve strict rejection of unsupported pseudo/combinator syntax.
+    if input.starts_with('*') && !input.contains([' ', '>', '+', '~', ':', ',']) {
+        return parse_simple_selector(input);
+    }
+
+    if let Some((base, nth, _receipt)) = compile_direct_has_capability(input)? {
+        let mut selector = parse_selector(&base)?;
+        selector.has_direct_child_nth_last = Some(nth);
+        return Ok(selector);
     }
 
     let compiled_selector = match compile_selector_capability(input) {
@@ -594,6 +626,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -633,6 +666,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -663,6 +697,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -693,6 +728,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
                 where_any_of: Vec::new(),
                 none_of: Vec::new(),
                 ancestor: None,
+                has_direct_child_nth_last: None,
             }
         } else {
             parse_selector(&compiled.base_selector)?
@@ -708,6 +744,7 @@ fn parse_selector(input: &str) -> Result<Selector, CssError> {
             classes: Vec::new(),
             attributes: Vec::new(),
             root: true,
+            has_direct_child_nth_last: None,
             states: Vec::new(),
             structural: Vec::new(),
             pseudo_element: None,
@@ -754,16 +791,13 @@ fn parse_declarations_with_translations(
     let mut declarations = Vec::new();
     let mut translations = Vec::new();
 
-    for raw in input.split(';') {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            continue;
-        }
-        let Some((property, value)) = raw.split_once(':') else {
-            return Err(CssError::MalformedDeclaration(raw.into()));
-        };
-        let property = property.trim().to_ascii_lowercase();
-        let value = value.trim();
+    let canonical = crate::css_canonical::parse_declaration_list(input)
+        .map_err(|error| CssError::MalformedDeclaration(format!("{error:?} in {}", input.chars().take(140).collect::<String>())))?;
+    for item in canonical.declarations {
+        let property = item.property;
+        let important = item.important;
+        let value = item.value;
+        let value = value.as_str();
 
         let global_keyword = match value {
             "inherit" => Some(CssGlobalKeyword::Inherit),
@@ -798,7 +832,7 @@ fn parse_declarations_with_translations(
                     }
                 },
                 "flex-direction" => match value {
-                    "row" | "column" => Some(CssValue::Keyword(value.into())),
+                    "row" | "column" | "row-reverse" | "column-reverse" => Some(CssValue::Keyword(value.into())),
                     _ => {
                         return Err(CssError::InvalidValue {
                             property,
@@ -811,17 +845,15 @@ fn parse_declarations_with_translations(
                         translations.push(compiled.receipt);
                         Some(CssValue::GridColumns(compiled.columns))
                     } else {
-                        let tracks = value.split_ascii_whitespace().collect::<Vec<_>>();
-                        if tracks.is_empty()
-                            || tracks.len() > 12
-                            || tracks.iter().any(|track| *track != "1fr")
-                        {
-                            return Err(CssError::InvalidValue {
-                                property,
-                                value: value.into(),
-                            });
+                        let compiled = compile_grid_track_syntax(value).map_err(|_| CssError::InvalidValue {
+                            property: property.clone(), value: value.into(),
+                        })?;
+                        translations.push(compiled.receipt);
+                        if compiled.tracks.columns.iter().all(|track| matches!(track, crate::capability_ir::AcirGridTrack::FractionMilli(1000))) {
+                            Some(CssValue::GridColumns(compiled.tracks.columns.len() as u16))
+                        } else {
+                            Some(CssValue::GridTracks(compiled.tracks))
                         }
-                        Some(CssValue::GridColumns(tracks.len() as u16))
                     }
                 }
                 "content" => {
@@ -853,9 +885,17 @@ fn parse_declarations_with_translations(
                             });
                         }
                         Some(CssValue::Var(name.into()))
+                    } else if value.starts_with("calc(") && value.contains("var(") {
+                        Some(CssValue::DeferredLength(value.into()))
                     } else if let Some(receipt) = compile_zero_length_capability(value)? {
                         translations.push(receipt);
                         Some(CssValue::Px(0.0))
+                    } else if let Some(compiled) = compile_linear_length_capability(value, AcirLengthBasis::ParentFontSize)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::LinearLength(compiled.value))
+                    } else if let Some(compiled) = compile_root_font_length_capability(value)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::RelativeLength(compiled.value))
                     } else if let Some(compiled) = compile_font_size_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -865,7 +905,11 @@ fn parse_declarations_with_translations(
                 }
                 "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
                 | "padding-bottom" | "padding-left" | "gap" => {
-                    if let Some(inner) =
+                    let zero_pair = if property == "gap" { compile_gap_zero_pair_capability(value)? } else { None };
+                    if let Some(receipt) = zero_pair {
+                        translations.push(receipt);
+                        Some(CssValue::Px(0.0))
+                    } else if let Some(inner) =
                         value.strip_prefix("var(").and_then(|v| v.strip_suffix(')'))
                     {
                         let name = inner.trim();
@@ -876,9 +920,17 @@ fn parse_declarations_with_translations(
                             });
                         }
                         Some(CssValue::Var(name.into()))
+                    } else if value.starts_with("calc(") && value.contains("var(") {
+                        Some(CssValue::DeferredLength(value.into()))
                     } else if let Some(receipt) = compile_zero_length_capability(value)? {
                         translations.push(receipt);
                         Some(CssValue::Px(0.0))
+                    } else if let Some(compiled) = compile_linear_length_capability(value, AcirLengthBasis::CurrentFontSize)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::LinearLength(compiled.value))
+                    } else if let Some(compiled) = compile_root_font_length_capability(value)? {
+                        translations.push(compiled.receipt);
+                        Some(CssValue::RelativeLength(compiled.value))
                     } else if let Some(compiled) = compile_current_font_length_capability(value)? {
                         translations.push(compiled.receipt);
                         Some(CssValue::RelativeLength(compiled.value))
@@ -892,7 +944,7 @@ fn parse_declarations_with_translations(
         };
 
         if let Some(value) = parsed {
-            declarations.push(Declaration { property, value });
+            declarations.push(Declaration { property, value, important });
         }
     }
 
@@ -926,6 +978,11 @@ fn collect_selector_translation_receipts(
     selector_source: &str,
     translations: &mut Vec<TranslationReceipt>,
 ) -> Result<(), CssError> {
+    if let Some((base, _nth, receipt)) = compile_direct_has_capability(selector_source)? {
+        collect_selector_translation_receipts(&base, translations)?;
+        translations.push(receipt);
+        return Ok(());
+    }
     match compile_selector_capability(selector_source) {
         Ok(Some(compiled_selector)) => {
             for compound in &compiled_selector.chain.compounds {
@@ -973,35 +1030,46 @@ fn collect_selector_translation_receipts(
 fn parse_compiled_stylesheet(
     input: &str,
 ) -> Result<(StyleSheet, Vec<TranslationReceipt>), CssError> {
+    let canonical = crate::css_canonical::parse_stylesheet_structure(input)
+        .map_err(|_error| CssError::MalformedRule)?;
     let mut rules = Vec::new();
     let mut translations = Vec::new();
-    let mut rest = input;
     let mut order = 0usize;
 
-    while !rest.trim().is_empty() {
-        let Some(open) = rest.find('{') else {
-            return Err(CssError::MalformedRule);
+    for rule in canonical.rules {
+        let crate::css_canonical::CanonicalRule::Style { selector: selector_source, declarations: canonical_declarations } = rule else {
+            // Non-style at-rules are represented and observable in CanonicalStylesheet.
+            // They are NOT silently reinterpreted as native style rules.
+            continue;
         };
-        let Some(close_rel) = rest[open + 1..].find('}') else {
-            return Err(CssError::MalformedRule);
-        };
-        let close = open + 1 + close_rel;
-
-        let selector_source = rest[..open].trim();
         let selectors = if let Some(compiled_list) =
-            compile_selector_list_capability(selector_source)?
+            compile_selector_list_capability(&selector_source)?
         {
             translations.push(compiled_list.receipt);
             compiled_list.selectors
         } else {
-            vec![selector_source.to_string()]
+            vec![selector_source]
         };
-
+        let source = canonical_declarations.declarations.iter()
+            .map(|declaration| format!(
+                "{}: {}{};",
+                declaration.property,
+                declaration.value,
+                if declaration.important { " !important" } else { "" },
+            ))
+            .collect::<String>();
         let (declarations, declaration_translations) =
-            parse_declarations_with_translations(&rest[open + 1..close])?;
+            parse_declarations_with_translations(&source)?;
         translations.extend(declaration_translations);
 
         for selector_source in selectors {
+            match crate::vendor_css::classify_selector(&selector_source).disposition {
+                crate::vendor_css::SelectorDisposition::InertWebKitPseudo => continue,
+                crate::vendor_css::SelectorDisposition::Unsupported => {
+                    return Err(CssError::UnsupportedSelector(selector_source));
+                }
+                crate::vendor_css::SelectorDisposition::NativeCandidate => {}
+            }
             collect_selector_translation_receipts(&selector_source, &mut translations)?;
             let selector = parse_selector(&selector_source)?;
             rules.push(Rule {
@@ -1010,11 +1078,8 @@ fn parse_compiled_stylesheet(
                 order,
             });
         }
-
         order += 1;
-        rest = &rest[close + 1..];
     }
-
     Ok((StyleSheet { rules }, translations))
 }
 
@@ -1024,11 +1089,16 @@ pub fn parse_stylesheet_with_environment(
 ) -> Result<CompiledStyleSheet, CssError> {
     let cleaned = strip_css_comments(input)?;
     let compiled = compile_stylesheet_capabilities(&cleaned, environment)?;
+    let canonical = crate::css_canonical::parse_stylesheet_structure(&compiled.source)
+        .map_err(|error| CssError::MalformedDeclaration(format!("canonical CSS: {error:?}")))?;
     let (stylesheet, selector_translations) = parse_compiled_stylesheet(&compiled.source)?;
     let mut translations = compiled.receipts;
     translations.extend(selector_translations);
+    use sha2::{Digest, Sha256};
     Ok(CompiledStyleSheet {
         stylesheet,
+        canonical,
+        canonical_source_sha256: hex::encode(Sha256::digest(compiled.source.as_bytes())),
         translations,
     })
 }
@@ -1306,6 +1376,42 @@ mod tests {
     }
 
     #[test]
+    fn canonical_native_lowering_preserves_nested_keyframes_without_phantom_rules() {
+        let compiled = parse_stylesheet_with_environment(
+            "@keyframes fade { 0% { visibility: hidden; } 100% { visibility: visible; } } p { font-size: 18px; }",
+            CapabilityEnvironment::default(),
+        ).unwrap();
+        assert_eq!(compiled.stylesheet.rules.len(), 1);
+        assert_eq!(compiled.stylesheet.rules[0].selector.tag.as_deref(), Some("p"));
+        assert_eq!(compiled.canonical.rules.len(), 2);
+        assert_eq!(compiled.canonical_source_sha256.len(), 64);
+        assert!(matches!(&compiled.canonical.rules[0], crate::css_canonical::CanonicalRule::AtRule { name, body: Some(_), .. } if name == "keyframes"));
+    }
+
+    #[test]
+    fn universal_selector_is_native_and_zero_specificity() {
+        let selector = parse_selector("*").unwrap();
+        assert_eq!(selector.specificity(), (0, 0, 0));
+        assert_eq!(selector.tag, None);
+        assert!(parse_selector("*.card").is_ok());
+        assert!(parse_selector("*#banner").is_ok());
+        assert!(parse_selector("*[data-kind=test]").is_ok());
+        for invalid in ["**", "*:", "* >", "*+", "*~", "*?", "*\\nscript"] {
+            assert!(parse_selector(invalid).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn universal_selector_flows_through_stylesheet_and_matches_elements() {
+        let document = parse_document("<html><body><p class=\"card\">Hi</p></body></html>").unwrap();
+        let sheet = parse_stylesheet("* { margin-top: 0; } *.card { margin-bottom: 0; }").unwrap();
+        assert_eq!(sheet.rules.len(), 2);
+        let p = document.nodes().iter().find(|n| matches!(&n.kind, NodeKind::Element { tag } if tag == "p")).unwrap();
+        assert!(sheet.rules[0].selector.matches(&document, p.id));
+        assert!(sheet.rules[1].selector.matches(&document, p.id));
+    }
+
+    #[test]
     fn unsupported_nth_formula_stays_fail_closed() {
         assert!(matches!(
             parse_stylesheet("li:nth-child(2n+1) { margin-bottom: 0; }"),
@@ -1545,10 +1651,12 @@ mod tests {
 
     #[test]
     fn rem_is_not_silently_treated_as_em() {
-        assert!(matches!(
-            parse_declarations("font-size: 1rem;"),
-            Err(CssError::InvalidValue { property, .. }) if property == "font-size"
+        let values = parse_declarations("font-size: 1rem;").unwrap();
+        assert!(matches!(values[0].value,
+            CssValue::RelativeLength(ref value) if value.milli_factor == 1000
+                && value.basis == AcirLengthBasis::RootFontSize
         ));
+        assert!(parse_declarations("margin-top: 1000000rem;").is_err());
     }
 
     #[test]
@@ -1696,11 +1804,54 @@ mod tests {
     }
 
     #[test]
+    fn unknown_webkit_scrollbar_selector_is_inert() {
+        let rules = parse_stylesheet(".nav::-webkit-scrollbar, p { display:block; }").unwrap().rules;
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].selector.tag.as_deref(), Some("p"));
+        for suffix in ["scrollbar-thumb", "scrollbar-track", "scrollbar-corner", "file-upload-button", "future-part"] {
+            let css = format!(".nav::-webkit-{suffix} {{ display:none; }} p {{ display:block; }}");
+            assert_eq!(parse_stylesheet(&css).unwrap().rules.len(), 1);
+        }
+        for unsupported in [".nav::-webkit-part() { display:none; }", ".nav::-moz-range-thumb { display:none; }"] {
+            assert!(parse_stylesheet(unsupported).is_err());
+        }
+    }
+
+    #[test]
+    fn bounded_has_direct_child_nth_last_matches_exact_child_count() {
+        use crate::native_html::parse_document;
+        let selector = parse_selector(".grid:has(>*:nth-child(4):last-child)").unwrap();
+        let compiled = parse_stylesheet(".grid:has(>*:nth-child(4):last-child) { display: block; }").unwrap();
+        assert_eq!(compiled.rules.len(), 1);
+        assert_eq!(compiled.rules[0].selector, selector);
+        for (count, expected) in [(3, false), (4, true), (5, false)] {
+            let mut markup = String::from(r#"<html><body><div class="grid">"#);
+            for _ in 0..count { markup.push_str("<span>x</span>"); }
+            markup.push_str("</div></body></html>");
+            let document = parse_document(&markup).unwrap();
+            let node = document.nodes().iter()
+                .find(|n| document.attribute(n.id, "class") == Some("grid")).unwrap();
+            assert_eq!(selector.matches(&document, node.id), expected);
+        }
+        for bad in [
+            ".grid:has(>*:nth-child(4):first-child)",
+            ".grid:has(>*:nth-child(0):last-child)",
+            ".grid:has(>*:nth-child(99):last-child)",
+            ".grid:has(.x)",
+        ] { assert!(parse_selector(bad).is_err(), "{bad}"); }
+    }
+
+    #[test]
     fn parses_bounded_flex_and_grid_declarations() {
         let flex = parse_declarations("display: flex; flex-direction: column; gap: 12px;").unwrap();
         assert!(matches!(flex[0].value, CssValue::Display(ref value) if value == "flex"));
         assert!(matches!(flex[1].value, CssValue::Keyword(ref value) if value == "column"));
         assert!(matches!(flex[2].value, CssValue::Px(value) if value == 12.0));
+
+        for direction in ["row-reverse", "column-reverse"] {
+            let declarations = parse_declarations(&format!("flex-direction: {direction};")).unwrap();
+            assert!(matches!(&declarations[0].value, CssValue::Keyword(actual) if actual == direction));
+        }
 
         let grid =
             parse_declarations("display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;")

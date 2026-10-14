@@ -8,6 +8,8 @@
 pub enum GeometryMode {
     FlexRow,
     FlexColumn,
+    FlexRowReverse,
+    FlexColumnReverse,
     Grid { columns: u16 },
 }
 
@@ -96,6 +98,14 @@ mod enabled {
             GeometryMode::FlexColumn => {
                 style.display = taffy::style::Display::Flex;
                 style.flex_direction = taffy::style::FlexDirection::Column;
+            }
+            GeometryMode::FlexRowReverse => {
+                style.display = taffy::style::Display::Flex;
+                style.flex_direction = taffy::style::FlexDirection::RowReverse;
+            }
+            GeometryMode::FlexColumnReverse => {
+                style.display = taffy::style::Display::Flex;
+                style.flex_direction = taffy::style::FlexDirection::ColumnReverse;
             }
             GeometryMode::Grid { columns } => {
                 if columns == 0 || columns > 12 {
@@ -202,10 +212,15 @@ mod enabled {
         for (index, node) in children.into_iter().enumerate() {
             let layout = tree.layout(node).map_err(|error| error.to_string())?;
             let expected = candidate.offsets_px[index];
-            if (layout.location.x - expected).abs() > 0.05
-                || (layout.size.width - candidate.widths_px[index]).abs() > 0.05
+            // Taffy snaps independently calculated CSS-pixel track edges to
+            // physical pixel boundaries. Compare those same snapped edges;
+            // do not relax the tolerance for genuinely incorrect geometry.
+            let snapped_start = expected.round();
+            let snapped_end = (expected + candidate.widths_px[index]).round();
+            if (layout.location.x - snapped_start).abs() > 0.05
+                || (layout.size.width - (snapped_end - snapped_start)).abs() > 0.05
             {
-                return Err("candidate/Taffy geometry disagrees".into());
+                return Err(format!("candidate/Taffy geometry disagrees: index={index}, expected_x={expected}, actual_x={}, expected_w={}, actual_w={}", layout.location.x, candidate.widths_px[index], layout.size.width));
             }
             boxes.push(GeometryBox {
                 x: layout.location.x,
@@ -224,6 +239,30 @@ mod enabled {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn reverse_flex_changes_visual_order_without_reordering_children() {
+            for (normal, reverse, horizontal) in [
+                (GeometryMode::FlexRow, GeometryMode::FlexRowReverse, true),
+                (GeometryMode::FlexColumn, GeometryMode::FlexColumnReverse, false),
+            ] {
+                let mk = |mode| GeometryRequest {
+                    mode, width: 300.0, gap: 10.0,
+                    children: vec![
+                        GeometryChild { min_height: 18.0 },
+                        GeometryChild { min_height: 35.0 },
+                        GeometryChild { min_height: 24.0 },
+                    ],
+                };
+                let a = solve_geometry(&mk(normal)).unwrap();
+                let b = solve_geometry(&mk(reverse)).unwrap();
+                assert_eq!(a.children.len(), 3);
+                assert_eq!(b.children.len(), 3);
+                let pos = |r: &GeometryResult, i: usize| if horizontal { r.children[i].x } else { r.children[i].y };
+                assert!(pos(&a, 0) < pos(&a, 2));
+                assert!(pos(&b, 0) > pos(&b, 2));
+            }
+        }
 
         #[test]
         fn candidate_track_order_survives_taffy() {
@@ -245,6 +284,22 @@ mod enabled {
             assert_eq!(result_a.children[1].x, 240.0);
             assert_eq!(result_b.children[0].width, 40.0);
             assert_eq!(result_b.children[1].x, 50.0);
+        }
+        #[test]
+        fn h4_emit_resolved_font_track_geometry() {
+            use crate::capability_ir::{AcirGridTrack, AcirGridTrackList};
+            let Ok(path) = std::env::var("ALTRU_TEST_FONT") else { return };
+            let font = std::fs::read(path).unwrap();
+            let measured = ["aaa", "bbbbbbbb"].map(|value|
+                crate::intrinsic_text::measure_ascii_text(&font, 16.0, value));
+            for (name, columns) in [
+                ("fr-auto", vec![AcirGridTrack::FractionMilli(1000), AcirGridTrack::Auto]),
+                ("auto-fr", vec![AcirGridTrack::Auto, AcirGridTrack::FractionMilli(1000)]),
+                ("fr-fr", vec![AcirGridTrack::FractionMilli(1000), AcirGridTrack::FractionMilli(1000)]),
+            ] {
+                let result = solve_candidate_mixed_grid(&AcirGridTrackList { columns }, &measured, 300.0, 10.0, 24.0).unwrap();
+                println!("H4_NATIVE {name} {} {} {} {}", result.children[0].x, result.children[0].width, result.children[1].x, result.children[1].width);
+            }
         }
         #[test]
         fn candidate_unknown_measurement_fails_closed() {
@@ -299,9 +354,14 @@ mod enabled {
 }
 
 #[cfg(feature = "taffy-layout")]
-pub use enabled::solve_geometry;
+pub use enabled::{solve_geometry, solve_candidate_mixed_grid};
 
 #[cfg(not(feature = "taffy-layout"))]
 pub fn solve_geometry(_: &GeometryRequest) -> Result<GeometryResult, String> {
     Err("flex/grid geometry adapter is not enabled".into())
+}
+
+#[cfg(not(feature = "taffy-layout"))]
+pub fn solve_candidate_mixed_grid(_: &crate::capability_ir::AcirGridTrackList, _: &[crate::intrinsic_measurement::IntrinsicMeasurement], _: f32, _: f32, _: f32) -> Result<GeometryResult, String> {
+    Err("mixed-grid geometry adapter is not enabled".into())
 }

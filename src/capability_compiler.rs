@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::capability_ir::{
     AcirComparison, AcirEnvironmentCondition, AcirEnvironmentFeature, AcirEnvironmentPredicate,
-    AcirInteractionPredicate, AcirLengthBasis, AcirMediaType, AcirPseudoElement, AcirRelativeLength,
+    AcirInteractionPredicate, AcirLengthBasis, AcirLinearLength, AcirMediaType, AcirPseudoElement, AcirRelativeLength,
     AcirSelectorBoolean, AcirSelectorChain, AcirSelectorRelation, AcirStructuralPredicate,
     AcirSupportCondition, AcirGridTrack, AcirGridTrackList, CapabilityEnvironment,
 };
@@ -21,8 +21,12 @@ pub const CSS_SELECTOR_LIST_V1: &str = "css.selector-list.v1";
 pub const CSS_PSEUDO_FIRST_LETTER_V1: &str = "css.pseudo-first-letter.v1";
 pub const CSS_PSEUDO_GENERATED_V1: &str = "css.pseudo-generated.v1";
 pub const CSS_SELECTOR_STRUCTURAL_V1: &str = "css.selector-structural.v1";
+pub const CSS_SELECTOR_DIRECT_HAS_V1: &str = "css.selector-direct-has.v1";
 pub const CSS_FONT_EM_V1: &str = "css.font-em.v1";
 pub const CSS_LENGTH_EM_V1: &str = "css.length-em.current-font.v1";
+pub const CSS_LENGTH_REM_V1: &str = "css.length-rem.root-font.v1";
+pub const CSS_CALC_LINEAR_LENGTH_V1: &str = "css.calc-linear-em-plus-px.v1";
+pub const CSS_GAP_ZERO_PAIR_V1: &str = "css.gap-zero-pair.v1";
 pub const CSS_SUPPORTS_DECLARATION_V1: &str = "css.supports-declaration.v1";
 pub const CSS_LENGTH_ZERO_V1: &str = "css.length-zero.v1";
 pub const CSS_GRID_REPEAT_FIXED_FR_V1: &str = "css.grid-repeat-fixed-fr.v1";
@@ -97,6 +101,12 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
+        id: CSS_SELECTOR_DIRECT_HAS_V1,
+        source_family: "css-selector-direct-has",
+        target_semantics: "native.direct-child-nth-last",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
         id: CSS_SELECTOR_STRUCTURAL_V1,
         source_family: "css-selector-structural",
         target_semantics: "acir.structural-predicate",
@@ -112,6 +122,24 @@ pub const VERIFIED_TRANSLATIONS: &[TranslationSpec] = &[
         id: CSS_LENGTH_EM_V1,
         source_family: "css-length-em",
         target_semantics: "acir.relative-length.current-font",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_LENGTH_REM_V1,
+        source_family: "css-length-rem",
+        target_semantics: "acir.relative-length.root-font",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_CALC_LINEAR_LENGTH_V1,
+        source_family: "css-calc-nonnegative-em-plus-px",
+        target_semantics: "acir.linear-length",
+        status: TranslationStatus::Verified,
+    },
+    TranslationSpec {
+        id: CSS_GAP_ZERO_PAIR_V1,
+        source_family: "css-gap-two-unitless-zeros",
+        target_semantics: "native.gap.px-zero-both-axes",
         status: TranslationStatus::Verified,
     },
     TranslationSpec {
@@ -206,6 +234,12 @@ pub struct CompiledSelectorStructuralCapability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledRelativeLengthCapability {
     pub value: AcirRelativeLength,
+    pub receipt: TranslationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledLinearLengthCapability {
+    pub value: AcirLinearLength,
     pub receipt: TranslationReceipt,
 }
 
@@ -363,6 +397,83 @@ pub fn compile_current_font_length_capability(
     }))
 }
 
+pub fn compile_root_font_length_capability(
+    input: &str,
+) -> Result<Option<CompiledRelativeLengthCapability>, CapabilityCompilerError> {
+    let normalized = input.trim().to_ascii_lowercase();
+    let Some(number) = normalized.strip_suffix("rem") else {
+        return Ok(None);
+    };
+    require_verified(CSS_LENGTH_REM_V1)?;
+    let milli_factor = parse_decimal_milli_value(number)?;
+    if milli_factor > 100_000 {
+        return Err(CapabilityCompilerError::UnsupportedValue(input.into()));
+    }
+    Ok(Some(CompiledRelativeLengthCapability {
+        value: AcirRelativeLength {
+            milli_factor,
+            basis: AcirLengthBasis::RootFontSize,
+        },
+        receipt: TranslationReceipt {
+            translation_id: CSS_LENGTH_REM_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
+/// Exact semantics for two-dimensional `gap: 0 0`: both row and column gaps are zero.
+/// Other gap pairs remain unsupported until both axes are independently modeled.
+pub fn compile_gap_zero_pair_capability(
+    input: &str,
+) -> Result<Option<TranslationReceipt>, CapabilityCompilerError> {
+    if input.split_ascii_whitespace().collect::<Vec<_>>() != ["0", "0"] {
+        return Ok(None);
+    }
+    require_verified(CSS_GAP_ZERO_PAIR_V1)?;
+    Ok(Some(TranslationReceipt {
+        translation_id: CSS_GAP_ZERO_PAIR_V1.into(),
+        source_sha256: sha256(input),
+        decision: TranslationDecision::Admitted,
+    }))
+}
+
+/// Compile only a strictly bounded nonnegative `calc(Nem + Mpx)` expression.
+/// No variables, subtraction, nesting, cross-unit arithmetic, or silent fallback.
+pub fn compile_linear_length_capability(
+    input: &str,
+    basis: AcirLengthBasis,
+) -> Result<Option<CompiledLinearLengthCapability>, CapabilityCompilerError> {
+    let raw = input.trim().to_ascii_lowercase();
+    if !raw.starts_with("calc(") {
+        return Ok(None);
+    }
+    let invalid = || CapabilityCompilerError::UnsupportedValue(input.into());
+    let inner = raw.strip_prefix("calc(")
+        .and_then(|v| v.strip_suffix(')'))
+        .ok_or_else(invalid)?;
+    let (font, pixels) = inner.split_once(" + ").ok_or_else(invalid)?;
+    let font = font.trim().strip_suffix("em").ok_or_else(invalid)?;
+    let pixels = pixels.trim().strip_suffix("px").ok_or_else(invalid)?;
+    let font_milli = parse_decimal_milli_value(font)?;
+    let pixel_milli = parse_decimal_milli_value(pixels)?;
+    if font_milli > 100_000 || pixel_milli > 1_000_000 {
+        return Err(invalid());
+    }
+    require_verified(CSS_CALC_LINEAR_LENGTH_V1)?;
+    Ok(Some(CompiledLinearLengthCapability {
+        value: AcirLinearLength {
+            font: AcirRelativeLength { milli_factor: font_milli, basis },
+            pixel_milli_offset: pixel_milli,
+        },
+        receipt: TranslationReceipt {
+            translation_id: CSS_CALC_LINEAR_LENGTH_V1.into(),
+            source_sha256: sha256(input),
+            decision: TranslationDecision::Admitted,
+        },
+    }))
+}
+
 /// Normalize explicit bounded track syntax without activating native layout.
 /// Promotion to layout requires intrinsic sizing and geometry proof (H2/H3).
 pub fn compile_grid_track_syntax(
@@ -466,6 +577,11 @@ fn parse_resolution_milli_dpi(raw: &str) -> Result<u32, CapabilityCompilerError>
 
 fn parse_width_milli_px(raw: &str) -> Result<u32, CapabilityCompilerError> {
     let raw = raw.trim().to_ascii_lowercase();
+    // CSS permits unitless zero for length-valued media features.
+    // Nonzero unitless numbers remain unsupported.
+    if raw == "0" || raw == "0.0" {
+        return Ok(0);
+    }
     let Some(number) = raw.strip_suffix("px") else {
         return Err(CapabilityCompilerError::UnsupportedMediaQuery(raw));
     };
@@ -544,14 +660,24 @@ fn split_top_level_and(query: &str) -> Result<Vec<&str>, CapabilityCompilerError
             _ => {}
         }
 
-        if depth == 0
-            && index + 5 <= bytes.len()
-            && query[index..index + 5].eq_ignore_ascii_case(" and ")
+        // Accept compact CSS conjunctions at explicit token boundaries.
+        if depth == 0 && index + 3 <= bytes.len()
+            && bytes[index..index + 3].eq_ignore_ascii_case(b"and")
         {
-            parts.push(query[start..index].trim());
-            start = index + 5;
-            index += 5;
-            continue;
+            let left_ok = index > 0
+                && (bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b')');
+            let right_ok = index + 3 < bytes.len()
+                && (bytes[index + 3].is_ascii_whitespace() || bytes[index + 3] == b'(');
+            if left_ok && right_ok {
+                let part = query[start..index].trim();
+                if part.is_empty() {
+                    return Err(CapabilityCompilerError::UnsupportedMediaQuery(query.into()));
+                }
+                parts.push(part);
+                start = index + 3;
+                index += 3;
+                continue;
+            }
         }
         index += 1;
     }
@@ -1065,6 +1191,35 @@ pub fn compile_selector_structural_capability(
     }))
 }
 
+/// Bounded, receipt-bearing direct-child :has relative selector subset.
+pub fn compile_direct_has_capability(input: &str) -> Result<Option<(String, u32, TranslationReceipt)>, CapabilityCompilerError> {
+    let Some((base, suffix)) = input.split_once(":has(") else { return Ok(None) };
+    if suffix.len() > 64 || !suffix.ends_with(')') || base.is_empty() || base.contains(":has(") {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+    let inner = suffix[..suffix.len() - 1].trim();
+    let Some(inner) = inner.strip_prefix('>').map(str::trim) else {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    };
+    let Some(inner) = inner.strip_prefix("*:nth-child(") else {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    };
+    let Some(digits) = inner.strip_suffix("):last-child") else {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    };
+    if digits.is_empty() || digits.len() > 2 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(CapabilityCompilerError::UnsupportedSelector(input.into()));
+    }
+    let nth = digits.parse::<u32>().map_err(|_| CapabilityCompilerError::UnsupportedSelector(input.into()))?;
+    if nth == 0 || nth > 12 { return Err(CapabilityCompilerError::UnsupportedSelector(input.into())); }
+    require_verified(CSS_SELECTOR_DIRECT_HAS_V1)?;
+    Ok(Some((base.to_owned(), nth, TranslationReceipt {
+        translation_id: CSS_SELECTOR_DIRECT_HAS_V1.into(),
+        source_sha256: sha256(input),
+        decision: TranslationDecision::Admitted,
+    })))
+}
+
 pub fn compile_selector_capability(
     input: &str,
 ) -> Result<Option<CompiledSelectorCapability>, CapabilityCompilerError> {
@@ -1462,6 +1617,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn two_zero_gap_terms_have_exact_receipted_semantics() {
+        let receipt = compile_gap_zero_pair_capability("0 0").unwrap().unwrap();
+        assert_eq!(receipt.translation_id, CSS_GAP_ZERO_PAIR_V1);
+        assert_eq!(receipt.source_sha256, sha256("0 0"));
+        assert!(compile_gap_zero_pair_capability("0px 0px").unwrap().is_none());
+        assert!(compile_gap_zero_pair_capability("0 1px").unwrap().is_none());
+        assert!(compile_gap_zero_pair_capability("0 0 0").unwrap().is_none());
+    }
+
+    #[test]
+    fn linear_calc_em_plus_px_is_receipted_and_bounded() {
+        let css = "calc(0.667em + 2px)";
+        let compiled = compile_linear_length_capability(css, AcirLengthBasis::CurrentFontSize)
+            .unwrap().unwrap();
+        assert_eq!(compiled.value.font.milli_factor, 667);
+        assert_eq!(compiled.value.pixel_milli_offset, 2000);
+        assert!((compiled.value.resolve_px(20.0, 18.0) - 14.006).abs() < 0.001);
+        assert_eq!(compiled.receipt.translation_id, CSS_CALC_LINEAR_LENGTH_V1);
+        assert_eq!(compiled.receipt.source_sha256, sha256(css));
+        let parent = compile_linear_length_capability(css, AcirLengthBasis::ParentFontSize)
+            .unwrap().unwrap();
+        assert!((parent.value.resolve_px(20.0, 18.0) - 15.34).abs() < 0.001);
+        assert_ne!(
+            compiled.receipt.source_sha256,
+            compile_linear_length_capability("calc(0.667em + 3px)", AcirLengthBasis::CurrentFontSize)
+                .unwrap().unwrap().receipt.source_sha256
+        );
+        for malformed in [
+            "calc(0.667em - 2px)", "calc(0.667em + 2px + 3px)",
+            "calc(var(--x) + 2px)", "calc(2px + 0.667em)",
+            "calc(1em + 1.2345px)", "calc(1000em + 2px)",
+            "calc(1em + 10000px)", "calc(1em + 2px", "calc(1em * 2px)",
+        ] {
+            assert!(compile_linear_length_capability(malformed, AcirLengthBasis::CurrentFontSize).is_err(), "unexpected admission {malformed}");
+        }
+    }
+
+    #[test]
     fn unitless_zero_length_compiles_but_nonzero_unitless_does_not() {
         let zero = compile_zero_length_capability("0").unwrap().unwrap();
         assert_eq!(zero.translation_id, CSS_LENGTH_ZERO_V1);
@@ -1529,6 +1722,42 @@ mod tests {
             let compiled =
                 compile_stylesheet_capabilities(&css, CapabilityEnvironment::desktop(800)).unwrap();
             assert_eq!(compiled.receipts.len(), 1, "{query}");
+        }
+    }
+
+    #[test]
+    fn compact_media_and_requires_balanced_token_boundaries() {
+        let environment = CapabilityEnvironment::desktop(800);
+        for query in [
+            "(min-width:640px)and (max-width: 900px)",
+            "(min-width:640px)and(max-width:900px)",
+            "screen and(max-width:900px)",
+        ] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_ok(), "{query}");
+        }
+        for query in [
+            "(min-width:640px)and(max-width:900px",
+            "(min-width:640px)android(max-width:900px)",
+            "and(max-width:900px)",
+            "(min-width:640px)and",
+            "(min-width:640px))and(max-width:900px)",
+        ] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_err(), "{query}");
+        }
+    }
+
+    #[test]
+    fn media_width_accepts_only_unitless_zero() {
+        let environment = CapabilityEnvironment::desktop(800);
+        for query in ["(min-width:0)", "(max-width:0)", "(min-width:0.0)"] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_ok(), "{query}");
+        }
+        for query in ["(min-width:1)", "(max-width:639)", "(min-width:-1)"] {
+            let css = format!("@media {query} {{ p {{ font-size: 20px; }} }}");
+            assert!(compile_stylesheet_capabilities(&css, environment).is_err(), "{query}");
         }
     }
 

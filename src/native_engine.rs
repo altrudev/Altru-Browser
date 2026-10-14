@@ -52,6 +52,7 @@ pub struct NativeExecutionEvidence {
     pub artifact_sha256: String,
     pub execution_sha256: String,
     pub translation_sha256: String,
+    pub canonical_css_sha256: String,
     pub mutation_epoch: u64,
     pub scene_epoch: u64,
 }
@@ -145,10 +146,11 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
     let input_sha256 = sha256(input.as_bytes());
     let artifact_sha256 = sha256(artifact.as_bytes());
     let execution_material = format!(
-        "awef-native-n2.1-execution-v2\n{}\n{}\n{}\n{}\n{}",
+        "awef-native-n2.1-execution-v3\n{}\n{}\n{}\n{}\n{}\n{}",
         input_sha256,
         artifact_sha256,
         translation_sha256,
+        compiled_styles.canonical_source_sha256,
         document.mutation_epoch(),
         scene.epoch
     );
@@ -159,6 +161,7 @@ pub fn execute_native_document(input: &str) -> Result<NativeExecution, NativeEng
         artifact_sha256,
         execution_sha256,
         translation_sha256,
+        canonical_css_sha256: compiled_styles.canonical_source_sha256,
         mutation_epoch: document.mutation_epoch(),
         scene_epoch: scene.epoch,
     };
@@ -205,6 +208,50 @@ mod tests {
             );
         }
         assert!(!manifest.production_eligible());
+    }
+
+    #[test]
+    fn canonical_css_source_is_bound_into_native_execution_evidence() {
+        let first = execute_native_document("<html><style>p { font-size: 18px; }</style><body><p>Bound</p></body></html>").unwrap();
+        let changed = execute_native_document("<html><style>p { font-size: 19px; }</style><body><p>Bound</p></body></html>").unwrap();
+        assert_eq!(first.evidence.canonical_css_sha256.len(), 64);
+        assert_ne!(first.evidence.canonical_css_sha256, changed.evidence.canonical_css_sha256);
+        assert_ne!(first.evidence.execution_sha256, changed.evidence.execution_sha256);
+        assert!(first.native_semantics);
+        assert!(!first.production_promoted);
+    }
+
+    #[test]
+    fn zero_pair_gap_keeps_native_layout_and_receipt() {
+        let html = "<html><head><style>div { gap: 0 0; }</style></head><body><div><p>A</p><p>B</p></div></body></html>";
+        let execution = execute_native_document(html).unwrap();
+        assert!(execution.native_semantics);
+        assert!(execution.translations.iter().any(|r| r.translation_id == crate::capability_compiler::CSS_GAP_ZERO_PAIR_V1));
+    }
+
+    #[test]
+    fn linear_calc_translation_is_bound_to_native_execution() {
+        let html = "<html><head><style>p { padding-top: calc(0.667em + 2px); }</style></head><body><p>Native calc</p></body></html>";
+        let execution = execute_native_document(html).unwrap();
+        assert!(execution.native_semantics);
+        assert!(execution.artifact.contains("Native calc"));
+        assert!(execution.translations.iter().any(|r| r.translation_id == crate::capability_compiler::CSS_CALC_LINEAR_LENGTH_V1));
+        let different = execute_native_document(
+            "<html><head><style>p { padding-top: calc(0.667em + 3px); }</style></head><body><p>Native calc</p></body></html>"
+        ).unwrap();
+        assert_ne!(execution.evidence.translation_sha256, different.evidence.translation_sha256);
+        assert_ne!(execution.evidence.execution_sha256, different.evidence.execution_sha256);
+    }
+
+    #[test]
+    fn native_universal_selector_document_executes_with_bound_evidence() {
+        let html = "<html><head><style>* { margin-top: 0; } *.highlight { font-size: 18px; }</style></head><body><p class=\"highlight\">Native universal CSS</p></body></html>";
+        let execution = execute_native_document(html).unwrap();
+        assert!(execution.native_semantics);
+        assert!(!execution.production_promoted);
+        assert!(execution.artifact.contains("Native universal CSS"));
+        assert_eq!(execution.evidence.input_sha256, sha256(html.as_bytes()));
+        assert_eq!(execution.evidence.execution_sha256.len(), 64);
     }
 
     #[test]

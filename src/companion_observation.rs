@@ -106,6 +106,10 @@ fn classify_runtime_error(error: &NativeRuntimeError) -> (&'static str, String) 
         NativeRuntimeError::Engine(inner) => {
             ("native-engine", format!("native engine failure: {inner:?}"))
         }
+        NativeRuntimeError::FallbackUnavailable(inner) => (
+            "fallback-unavailable",
+            format!("native engine unsupported; authorized fallback not wired: {inner:?}"),
+        ),
     }
 }
 
