@@ -19,6 +19,7 @@ desktop-preview = ["taffy-layout", "dep:eframe", "dep:ureq", "dep:image", "dep:u
 
 [dependencies]
 hex = "0.4"
+cssparser = "=0.37.0"
 ab_glyph = "0.2.32"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
