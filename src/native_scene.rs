@@ -2,6 +2,12 @@
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneCommand {
+    Fill {
+        x: f32, y: f32, width: f32, height: f32, rgba: [u8;4],
+    },
+    ColoredText {
+        x: f32, y: f32, size_px: f32, text: String, rgba: [u8;4],
+    },
     Text {
         x: f32,
         y: f32,

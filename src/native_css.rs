@@ -312,6 +312,7 @@ pub enum CssValue {
     /// Canonical expression awaiting computed-value-time variable substitution.
     DeferredLength(String),
     Raw(String),
+    Color([u8; 4]),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -855,6 +856,9 @@ fn parse_declarations_with_translations(
                             Some(CssValue::GridTracks(compiled.tracks))
                         }
                     }
+                }
+                "background-color" | "color" => {
+                    crate::css_standards::parse_native_color(value).map(CssValue::Color)
                 }
                 "content" => {
                     if matches!(value, "none" | "normal") {

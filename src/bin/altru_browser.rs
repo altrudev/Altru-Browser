@@ -466,7 +466,9 @@ impl AltruBrowserApp {
             .iter()
             .map(|command| match command {
                 SceneCommand::Text { y, size_px, .. } => y + size_px * 1.8,
+                SceneCommand::ColoredText { y, size_px, .. } => y + size_px * 1.8,
                 SceneCommand::Rect { y, height, .. } => y + height,
+                SceneCommand::Fill { y, height, .. } => y + height,
             })
             .fold(620.0_f32, f32::max);
 
@@ -480,6 +482,23 @@ impl AltruBrowserApp {
 
                 for command in &scene.commands {
                     match command {
+                        SceneCommand::Fill {x,y,width,height,rgba} => {
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    origin + Vec2::new(x*scale,y*scale),
+                                    Vec2::new(width*scale,height*scale)),
+                                0.0, Color32::from_rgba_unmultiplied(rgba[0],rgba[1],rgba[2],rgba[3])
+                            );
+                        }
+                        SceneCommand::ColoredText {x,y,size_px,text,rgba} => {
+                            painter.text(
+                                origin + Vec2::new(x*scale,y*scale),
+                                egui::Align2::LEFT_TOP,
+                                text,
+                                FontId::proportional((size_px*scale).clamp(10.0,64.0)),
+                                Color32::from_rgba_unmultiplied(rgba[0],rgba[1],rgba[2],rgba[3])
+                            );
+                        }
                         SceneCommand::Text {
                             x,
                             y,

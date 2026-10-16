@@ -54,3 +54,34 @@ mod tests {
             Err("CSS source size limit exceeded"));
     }
 }
+
+
+/// Bounded RGB palette conversion at the native paint boundary.
+pub fn parse_native_color(input: &str) -> Option<[u8;4]> {
+    let value = input.trim().to_ascii_lowercase();
+    if value == "transparent" { return Some([0,0,0,0]); }
+    let hex = value.strip_prefix('#');
+    if let Some(h) = hex {
+        let expanded = if h.len() == 3 || h.len() == 4 {
+            h.chars().flat_map(|c| [c,c]).collect::<String>()
+        } else { h.to_owned() };
+        if expanded.len() != 6 && expanded.len() != 8 { return None; }
+        let bytes = expanded.as_bytes().chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?,16).ok())
+            .collect::<Option<Vec<_>>>()?;
+        return Some([bytes[0],bytes[1],bytes[2],*bytes.get(3).unwrap_or(&255)]);
+    }
+    let rgb = value.strip_prefix("rgb(").and_then(|v|v.strip_suffix(')'));
+    if let Some(v) = rgb {
+        let channels = v.split(',').map(|v|v.trim().parse::<u8>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        if channels.len() == 3 { return Some([channels[0], channels[1], channels[2],255]); }
+    }
+    let channels = match value.as_str() {
+        "black" => [0,0,0,255], "white" => [255,255,255,255],
+        "red" => [255,0,0,255], "blue" => [0,0,255,255],
+        "green" => [0,128,0,255], "gray" | "grey" => [128,128,128,255],
+        _ => return None,
+    };
+    Some(channels)
+}

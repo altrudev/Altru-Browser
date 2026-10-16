@@ -64,6 +64,8 @@ pub enum FlexDirection {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComputedStyle {
     pub display: Display,
+    pub color: [u8;4],
+    pub background_color: [u8;4],
     pub font_size_px: f32,
     pub margin_before_px: f32,
     pub margin_after_px: f32,
@@ -82,6 +84,8 @@ impl ComputedStyle {
     pub const fn initial() -> Self {
         Self {
             display: Display::Inline,
+            color: [0,0,0,255],
+            background_color: [0,0,0,0],
             font_size_px: 16.0,
             margin_before_px: 0.0,
             margin_after_px: 0.0,
@@ -319,7 +323,7 @@ fn resolve_computed_declaration(
 }
 
 fn property_inherits_by_default(property: &str) -> bool {
-    matches!(property, "font-size")
+    matches!(property, "font-size" | "color")
 }
 
 fn assign_property_from(
@@ -329,6 +333,8 @@ fn assign_property_from(
 ) {
     match property {
         "display" => target.display = source.display,
+        "color" => target.color = source.color,
+        "background-color" => target.background_color = source.background_color,
         "flex-direction" => target.flex_direction = source.flex_direction,
         "grid-template-columns" => { target.grid_columns = source.grid_columns; target.grid_track_weights = source.grid_track_weights; },
         "gap" => target.gap_px = source.gap_px,
@@ -418,6 +424,8 @@ fn apply_value(
                 };
             }
         },
+        ("color", CssValue::Color(value)) => style.color = *value,
+        ("background-color", CssValue::Color(value)) => style.background_color = *value,
         ("gap", CssValue::Px(value)) => style.gap_px = *value,
         ("font-size", CssValue::Px(value)) => style.font_size_px = *value,
         ("margin-top", CssValue::Px(value)) => style.margin_before_px = *value,
@@ -442,6 +450,7 @@ fn resolve_element_style(
     };
 
     let mut computed = compute_style(&candidate.kind);
+    computed.color = parent_style.computed.color;
     if !ua_specifies_font_size(&candidate.kind) {
         computed.font_size_px = parent_style.computed.font_size_px;
     }
@@ -684,6 +693,7 @@ pub fn resolve_styles_with_interaction(
             NodeKind::Text(_) => {
                 let mut inherited = ResolvedStyle::initial();
                 inherited.computed.font_size_px = parent_style.computed.font_size_px;
+                inherited.computed.color = parent_style.computed.color;
                 inherited.computed.display = parent_style.computed.display;
                 inherited.custom_properties = parent_style.custom_properties.clone();
                 inherited.root_font_size_px = parent_style.root_font_size_px;

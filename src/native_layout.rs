@@ -23,6 +23,8 @@ pub struct LayoutFragment {
     pub height: f32,
     pub font_size_px: f32,
     pub text: Option<String>,
+    pub fill: Option<[u8;4]>,
+    pub color: [u8;4],
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -126,6 +128,8 @@ fn emit_generated_text(
         height: line_height,
         font_size_px: generated.computed.font_size_px,
         text: Some(generated.content),
+        fill: None,
+        color: generated.computed.color,
     });
     *y += line_height;
     Ok(())
@@ -256,6 +260,18 @@ fn layout_node(
     if style.display == Display::None {
         return Ok(());
     }
+    let background_index = if style.background_color[3] > 0
+        && matches!(candidate.kind, NodeKind::Element { .. })
+    {
+        let index = fragments.len();
+        fragments.push(LayoutFragment {
+            node, x, y: *y, width, height: 0.0,
+            font_size_px: style.font_size_px,
+            text: None, fill: Some(style.background_color),
+            color: style.color,
+        });
+        Some((index, *y))
+    } else { None };
 
     match &candidate.kind {
         NodeKind::Document => {
@@ -283,7 +299,9 @@ fn layout_node(
                             width: width.max(1.0),
                             height: line_height,
                             font_size_px: style.font_size_px,
-                            text: Some(before.to_string()),
+                            fill: None,
+            color: style.color,
+            text: Some(before.to_string()),
                         });
                     }
 
@@ -294,7 +312,9 @@ fn layout_node(
                         width: first_width,
                         height: line_height,
                         font_size_px: first_size,
-                        text: Some(first.to_string()),
+                        fill: None,
+            color: style.color,
+            text: Some(first.to_string()),
                     });
 
                     if !after.is_empty() {
@@ -305,7 +325,9 @@ fn layout_node(
                             width: (width - first_width).max(1.0),
                             height: line_height,
                             font_size_px: style.font_size_px,
-                            text: Some(after.to_string()),
+                            fill: None,
+            color: style.color,
+            text: Some(after.to_string()),
                         });
                     }
 
@@ -321,7 +343,9 @@ fn layout_node(
                     width: width.max(1.0),
                     height: base_line_height,
                     font_size_px: style.font_size_px,
-                    text: Some(text.clone()),
+                    fill: None,
+            color: style.color,
+            text: Some(text.clone()),
                 });
                 *y += base_line_height;
             }
@@ -528,7 +552,9 @@ fn layout_node(
                             width: geometry_box.width.max(1.0),
                             height: (font_size * 1.35).ceil(),
                             font_size_px: *font_size,
-                            text: Some(content.clone()),
+                            fill: None,
+            color: style.color,
+            text: Some(content.clone()),
                         });
                         local_y += (font_size * 1.35).ceil();
                     }
@@ -581,6 +607,9 @@ fn layout_node(
                 *y += style.padding_bottom_px + style.margin_after_px;
             }
         }
+    }
+    if let Some((index, top)) = background_index {
+        fragments[index].height = (*y - top).max(0.0);
     }
     Ok(())
 }
@@ -635,23 +664,30 @@ pub fn layout_document(
 }
 
 pub fn scene_from_layout(layout: &LayoutTree) -> Scene {
-    let commands = layout
-        .fragments
-        .iter()
-        .filter_map(|fragment| {
-            fragment.text.as_ref().map(|text| SceneCommand::Text {
-                x: fragment.x,
-                y: fragment.y + fragment.font_size_px,
-                size_px: fragment.font_size_px,
-                text: text.clone(),
+    let commands = layout.fragments.iter().filter_map(|fragment| {
+        if let Some(rgba) = fragment.fill {
+            Some(SceneCommand::Fill {
+                x: fragment.x, y: fragment.y, width: fragment.width,
+                height: fragment.height, rgba,
             })
-        })
-        .collect();
-
-    Scene {
-        commands,
-        epoch: layout.epoch,
-    }
+        } else {
+            fragment.text.as_ref().map(|text| {
+                if fragment.color != [0,0,0,255] {
+                    SceneCommand::ColoredText {
+                        x: fragment.x, y: fragment.y + fragment.font_size_px,
+                        size_px: fragment.font_size_px, text: text.clone(),
+                        rgba: fragment.color,
+                    }
+                } else {
+                    SceneCommand::Text {
+                        x: fragment.x, y: fragment.y + fragment.font_size_px,
+                        size_px: fragment.font_size_px, text: text.clone(),
+                    }
+                }
+            })
+        }
+    }).collect();
+    Scene { commands, epoch: layout.epoch }
 }
 
 #[cfg(test)]
@@ -659,6 +695,19 @@ mod tests {
     use super::*;
     use crate::native_css::parse_stylesheet;
     use crate::native_html::parse_document;
+
+    #[test]
+    fn native_background_color_reaches_painted_scene() {
+        let document = parse_document("<html><body><div class='panel'>Painted</div></body></html>").unwrap();
+        let sheet = parse_stylesheet(".panel { background-color: #1268ac; color: white; padding-top: 8px; }").unwrap();
+        let layout = layout_document_with_styles(&document, &sheet, 360.0).unwrap();
+        let scene = scene_from_layout(&layout);
+        assert!(scene.commands.iter().any(|command| matches!(command,
+            SceneCommand::Fill { rgba: [18, 104, 172, 255], height, .. } if *height > 8.0)));
+        assert!(scene.commands.iter().any(|command| matches!(command,
+            SceneCommand::ColoredText { text, rgba: [255,255,255,255], .. }
+                if text == "Painted")));
+    }
 
     #[test]
     fn heading_text_inherits_heading_size() {
