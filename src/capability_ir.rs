@@ -15,6 +15,9 @@ pub enum AcirEnvironmentFeature {
     ResolutionMilliDpi,
     ViewportWidthMilliPx,
     PrefersReducedMotionFlag,
+    HoverFlag,
+    PointerFineFlag,
+    PrefersDarkColorSchemeFlag,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +102,9 @@ pub struct CapabilityEnvironment {
     /// Layout viewport width represented in milli-CSS-pixels.
     pub viewport_width_milli_px: u32,
     pub prefers_reduced_motion: bool,
+    pub hover_capable: bool,
+    pub fine_pointer: bool,
+    pub prefers_dark_color_scheme: bool,
     pub media_type: AcirMediaType,
 }
 
@@ -108,6 +114,9 @@ impl Default for CapabilityEnvironment {
             resolution_milli_dpi: 96_000,
             viewport_width_milli_px: 800_000,
             prefers_reduced_motion: false,
+            hover_capable: true,
+            fine_pointer: true,
+            prefers_dark_color_scheme: false,
             media_type: AcirMediaType::Screen,
         }
     }
@@ -124,6 +133,9 @@ impl CapabilityEnvironment {
             resolution_milli_dpi,
             viewport_width_milli_px,
             prefers_reduced_motion,
+            hover_capable: true,
+            fine_pointer: true,
+            prefers_dark_color_scheme: false,
             media_type,
         }
     }
@@ -133,6 +145,9 @@ impl CapabilityEnvironment {
             resolution_milli_dpi: 96_000,
             viewport_width_milli_px: viewport_width_px.saturating_mul(1_000),
             prefers_reduced_motion: false,
+            hover_capable: true,
+            fine_pointer: true,
+            prefers_dark_color_scheme: false,
             media_type: AcirMediaType::Screen,
         }
     }
@@ -144,6 +159,10 @@ impl CapabilityEnvironment {
             AcirEnvironmentFeature::PrefersReducedMotionFlag => {
                 u32::from(self.prefers_reduced_motion)
             }
+            AcirEnvironmentFeature::HoverFlag => u32::from(self.hover_capable),
+            AcirEnvironmentFeature::PointerFineFlag => u32::from(self.fine_pointer),
+            AcirEnvironmentFeature::PrefersDarkColorSchemeFlag =>
+                u32::from(self.prefers_dark_color_scheme),
         };
         match predicate.comparison {
             AcirComparison::AtLeast => observed >= predicate.value,

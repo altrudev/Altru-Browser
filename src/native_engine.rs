@@ -65,6 +65,8 @@ pub struct NativeExecution {
     pub artifact: String,
     pub evidence: NativeExecutionEvidence,
     pub translations: Vec<TranslationReceipt>,
+    pub skipped_css_selectors: usize,
+    pub skipped_css_declarations: usize,
     pub native_semantics: bool,
     pub production_promoted: bool,
 }
@@ -147,7 +149,7 @@ pub fn execute_native_document_with_external_css(
         if external_css.len() > 4_000_000 {
             return Err(NativeEngineError::Css(CssError::MalformedRule));
         }
-        let external = crate::native_css::parse_stylesheet_with_environment(
+        let external = crate::native_css::parse_stylesheet_browser_with_environment(
             external_css, CapabilityEnvironment::default()
         )?;
         // Preserve the external author rules ahead of embedded author rules, with
@@ -159,6 +161,8 @@ pub fn execute_native_document_with_external_css(
             rules.push(rule);
         }
         compiled_styles.stylesheet.rules = rules;
+        compiled_styles.skipped_selectors += external.skipped_selectors;
+        compiled_styles.skipped_declarations += external.skipped_declarations;
         compiled_styles.translations.extend(external.translations);
         compiled_styles.canonical_source_sha256 = sha256(
             format!("external-css-v1\n{}\ninline-css-v1\n{}", external_css,
@@ -206,6 +210,8 @@ pub fn execute_native_document_with_external_css(
         artifact,
         evidence,
         translations: compiled_styles.translations,
+        skipped_css_selectors: compiled_styles.skipped_selectors,
+        skipped_css_declarations: compiled_styles.skipped_declarations,
         native_semantics: true,
         production_promoted: false,
     })

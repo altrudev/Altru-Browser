@@ -610,6 +610,22 @@ fn parse_parenthesized_predicate(
         .split_once(':')
         .ok_or_else(|| CapabilityCompilerError::UnsupportedMediaQuery(inner.into()))?;
     let feature = feature.trim().to_ascii_lowercase();
+    let discrete = match (feature.as_str(), value.trim().to_ascii_lowercase().as_str()) {
+        ("hover" | "any-hover", "none") =>
+            Some(AcirEnvironmentFeature::HoverFlag),
+        ("pointer" | "any-pointer", "none" | "coarse") =>
+            Some(AcirEnvironmentFeature::PointerFineFlag),
+        ("prefers-color-scheme", "light") =>
+            Some(AcirEnvironmentFeature::PrefersDarkColorSchemeFlag),
+        ("prefers-reduced-motion", "no-preference") =>
+            Some(AcirEnvironmentFeature::PrefersReducedMotionFlag),
+        _ => None,
+    };
+    if let Some(feature) = discrete {
+        return Ok(AcirEnvironmentPredicate {
+            feature, comparison: AcirComparison::AtMost, value: 0,
+        });
+    }
     let (environment_feature, comparison, parsed_value) = match feature.as_str() {
         "min-resolution" => (
             AcirEnvironmentFeature::ResolutionMilliDpi,
@@ -630,6 +646,42 @@ fn parse_parenthesized_predicate(
             AcirEnvironmentFeature::ViewportWidthMilliPx,
             AcirComparison::AtMost,
             parse_width_milli_px(value)?,
+        ),
+        "hover" | "any-hover" => (
+            AcirEnvironmentFeature::HoverFlag,
+            AcirComparison::AtLeast,
+            match value.trim().to_ascii_lowercase().as_str() {
+                "hover" => 1,
+                "none" => 0,
+                _ => return Err(CapabilityCompilerError::UnsupportedMediaQuery(inner.into())),
+            },
+        ),
+        "pointer" | "any-pointer" => (
+            AcirEnvironmentFeature::PointerFineFlag,
+            AcirComparison::AtLeast,
+            match value.trim().to_ascii_lowercase().as_str() {
+                "fine" => 1,
+                "coarse" | "none" => 0,
+                _ => return Err(CapabilityCompilerError::UnsupportedMediaQuery(inner.into())),
+            },
+        ),
+        "prefers-reduced-motion" => (
+            AcirEnvironmentFeature::PrefersReducedMotionFlag,
+            AcirComparison::AtLeast,
+            match value.trim().to_ascii_lowercase().as_str() {
+                "reduce" => 1,
+                "no-preference" => 0,
+                _ => return Err(CapabilityCompilerError::UnsupportedMediaQuery(inner.into())),
+            },
+        ),
+        "prefers-color-scheme" => (
+            AcirEnvironmentFeature::PrefersDarkColorSchemeFlag,
+            AcirComparison::AtLeast,
+            match value.trim().to_ascii_lowercase().as_str() {
+                "dark" => 1,
+                "light" => 0,
+                _ => return Err(CapabilityCompilerError::UnsupportedMediaQuery(inner.into())),
+            },
         ),
         _ => return Err(CapabilityCompilerError::UnsupportedMediaQuery(inner.into())),
     };
@@ -2089,7 +2141,7 @@ mod tests {
     #[test]
     fn unsupported_media_feature_fails_closed() {
         let result = compile_stylesheet_capabilities(
-            "@media (prefers-color-scheme:dark) { p { font-size: 20px; } }",
+            "@media (prefers-contrast:more) { p { font-size: 20px; } }",
             CapabilityEnvironment::default(),
         );
         assert!(matches!(

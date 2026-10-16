@@ -25,6 +25,7 @@ pub struct LayoutFragment {
     pub text: Option<String>,
     pub fill: Option<[u8;4]>,
     pub color: [u8;4],
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -121,6 +122,7 @@ fn emit_generated_text(
 
     let line_height = (generated.computed.font_size_px * 1.35).ceil();
     fragments.push(LayoutFragment {
+            image: None,
         node,
         x,
         y: *y,
@@ -260,11 +262,33 @@ fn layout_node(
     if style.display == Display::None {
         return Ok(());
     }
+    if let NodeKind::Element { tag } = &candidate.kind {
+        if tag == "img" {
+            let src = document.attribute(node, "src").unwrap_or_default().trim();
+            let parse_dimension = |name: &str, fallback: f32| {
+                document.attribute(node, name).and_then(|value| value.parse::<f32>().ok())
+                    .filter(|value| value.is_finite() && *value >= 1.0)
+                    .unwrap_or(fallback).min(4096.0)
+            };
+            let image_width = parse_dimension("width", width.min(240.0));
+            let image_height = parse_dimension("height", 135.0);
+            if !src.is_empty() {
+                fragments.push(LayoutFragment {
+                    node, x, y: *y, width: image_width, height: image_height,
+                    font_size_px: style.font_size_px, text: None,
+                    fill: None, color: style.color, image: Some(src.to_owned()),
+                });
+                *y += image_height;
+            }
+            return Ok(());
+        }
+    }
     let background_index = if style.background_color[3] > 0
         && matches!(candidate.kind, NodeKind::Element { .. })
     {
         let index = fragments.len();
         fragments.push(LayoutFragment {
+            image: None,
             node, x, y: *y, width, height: 0.0,
             font_size_px: style.font_size_px,
             text: None, fill: Some(style.background_color),
@@ -293,6 +317,7 @@ fn layout_node(
 
                     if !before.is_empty() {
                         fragments.push(LayoutFragment {
+            image: None,
                             node,
                             x,
                             y: *y,
@@ -306,6 +331,7 @@ fn layout_node(
                     }
 
                     fragments.push(LayoutFragment {
+            image: None,
                         node,
                         x,
                         y: *y,
@@ -319,6 +345,7 @@ fn layout_node(
 
                     if !after.is_empty() {
                         fragments.push(LayoutFragment {
+            image: None,
                             node,
                             x: x + first_width,
                             y: *y,
@@ -337,6 +364,7 @@ fn layout_node(
                 }
             } else {
                 fragments.push(LayoutFragment {
+            image: None,
                     node,
                     x,
                     y: *y,
@@ -546,6 +574,7 @@ fn layout_node(
                     )?,
                     FormattingItem::Generated(content, font_size) => {
                         fragments.push(LayoutFragment {
+            image: None,
                             node,
                             x: child_x + geometry_box.x,
                             y: local_y,
@@ -665,7 +694,12 @@ pub fn layout_document(
 
 pub fn scene_from_layout(layout: &LayoutTree) -> Scene {
     let commands = layout.fragments.iter().filter_map(|fragment| {
-        if let Some(rgba) = fragment.fill {
+        if let Some(src) = &fragment.image {
+            Some(SceneCommand::Image {
+                x: fragment.x, y: fragment.y, width: fragment.width,
+                height: fragment.height, src: src.clone(),
+            })
+        } else if let Some(rgba) = fragment.fill {
             Some(SceneCommand::Fill {
                 x: fragment.x, y: fragment.y, width: fragment.width,
                 height: fragment.height, rgba,
@@ -695,6 +729,18 @@ mod tests {
     use super::*;
     use crate::native_css::parse_stylesheet;
     use crate::native_html::parse_document;
+
+    #[test]
+    fn native_image_dom_dimensions_flow_into_scene() {
+        let document = parse_document(
+            "<html><body><img src='/asset.png' width='120' height='80'></body></html>"
+        ).unwrap();
+        let layout = layout_document(&document, 400.0).unwrap();
+        let scene = scene_from_layout(&layout);
+        assert!(scene.commands.iter().any(|command| matches!(command,
+            SceneCommand::Image { src, width, height, .. }
+            if src == "/asset.png" && *width == 120.0 && *height == 80.0)));
+    }
 
     #[test]
     fn native_background_color_reaches_painted_scene() {

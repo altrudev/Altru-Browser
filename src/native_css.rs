@@ -37,6 +37,7 @@ impl From<CapabilityCompilerError> for CssError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttributeOperator {
+    Exists,
     Equals,
     IncludesWord,
     DashPrefix,
@@ -174,6 +175,7 @@ impl Selector {
                 let actual = actual.to_ascii_lowercase();
                 let expected = attribute.value.to_ascii_lowercase();
                 match attribute.operator {
+                    AttributeOperator::Exists => true,
                     AttributeOperator::Equals => actual == expected,
                     AttributeOperator::IncludesWord => {
                         actual.split_ascii_whitespace().any(|word| word == expected)
@@ -187,6 +189,7 @@ impl Selector {
                 }
             } else {
                 match attribute.operator {
+                    AttributeOperator::Exists => true,
                     AttributeOperator::Equals => actual == attribute.value,
                     AttributeOperator::IncludesWord => actual
                         .split_ascii_whitespace()
@@ -342,6 +345,10 @@ pub struct CompiledStyleSheet {
     pub canonical: crate::css_canonical::CanonicalStylesheet,
     pub canonical_source_sha256: String,
     pub translations: Vec<TranslationReceipt>,
+    /// Browser-compatible recovery diagnostics: only explicitly represented
+    /// skipped selectors/declarations are counted, never called rendered support.
+    pub skipped_selectors: usize,
+    pub skipped_declarations: usize,
 }
 
 fn parse_attribute_selector(input: &str) -> Result<AttributeSelector, CssError> {
@@ -360,11 +367,13 @@ fn parse_attribute_selector(input: &str) -> Result<AttributeSelector, CssError> 
         ("*=", AttributeOperator::Contains),
         ("=", AttributeOperator::Equals),
     ];
-    let Some((name, operator, raw_value)) = operators
+    let (name, operator, raw_value) = if let Some((name, operator, value)) = operators
         .into_iter()
         .find_map(|(token, operator)| body.split_once(token).map(|(name, value)| (name, operator, value)))
-    else {
-        return Err(CssError::UnsupportedSelector(format!("[{input}]")));
+    {
+        (name, operator, value)
+    } else {
+        (body, AttributeOperator::Exists, "")
     };
 
     let name = name.trim().to_ascii_lowercase();
@@ -387,7 +396,7 @@ fn parse_attribute_selector(input: &str) -> Result<AttributeSelector, CssError> 
     } else {
         raw_value.to_string()
     };
-    if value.is_empty() {
+    if value.is_empty() && operator != AttributeOperator::Exists {
         return Err(CssError::UnsupportedSelector(format!("[{input}]")));
     }
 
@@ -1033,12 +1042,15 @@ fn collect_selector_translation_receipts(
 
 fn parse_compiled_stylesheet(
     input: &str,
-) -> Result<(StyleSheet, Vec<TranslationReceipt>), CssError> {
+    browser_mode: bool,
+) -> Result<(StyleSheet, Vec<TranslationReceipt>, usize, usize), CssError> {
     let canonical = crate::css_canonical::parse_stylesheet_structure(input)
         .map_err(|_error| CssError::MalformedRule)?;
     let mut rules = Vec::new();
     let mut translations = Vec::new();
     let mut order = 0usize;
+    let mut skipped_selectors = 0usize;
+    let mut skipped_declarations = 0usize;
 
     for rule in canonical.rules {
         let crate::css_canonical::CanonicalRule::Style { selector: selector_source, declarations: canonical_declarations } = rule else {
@@ -1062,34 +1074,103 @@ fn parse_compiled_stylesheet(
                 if declaration.important { " !important" } else { "" },
             ))
             .collect::<String>();
-        let (declarations, declaration_translations) =
-            parse_declarations_with_translations(&source)?;
+        let (declarations, declaration_translations) = if browser_mode {
+            // CSS recovery is declaration-scoped: a valid declaration survives
+            // an unsupported adjacent declaration instead of failing the sheet.
+            let mut declarations = Vec::new();
+            let mut receipts = Vec::new();
+            for declaration in &canonical_declarations.declarations {
+                let single = format!("{}: {}{};",
+                    declaration.property, declaration.value,
+                    if declaration.important { " !important" } else { "" });
+                match parse_declarations_with_translations(&single) {
+                    Ok((items, item_receipts)) => {
+                        if items.iter().any(|item|
+                            matches!(item.value, CssValue::UnsupportedContent(_))) {
+                            // This native build cannot paint generated image/complex
+                            // content; do not abort a whole valid web stylesheet.
+                            skipped_declarations += 1;
+                            continue;
+                        }
+                        declarations.extend(items);
+                        receipts.extend(item_receipts);
+                    }
+                    Err(CssError::InvalidValue { .. } | CssError::CapabilityCompiler(_)
+                        | CssError::UnresolvedCustomProperty(_)) => {
+                        skipped_declarations += 1;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            (declarations, receipts)
+        } else {
+            parse_declarations_with_translations(&source)?
+        };
         translations.extend(declaration_translations);
 
+        let mut rule_selectors = Vec::new();
+        let mut rule_receipts = Vec::new();
+        let mut unsupported_rule = false;
         for selector_source in selectors {
-            match crate::vendor_css::classify_selector(&selector_source).disposition {
-                crate::vendor_css::SelectorDisposition::InertWebKitPseudo => continue,
-                crate::vendor_css::SelectorDisposition::Unsupported => {
-                    return Err(CssError::UnsupportedSelector(selector_source));
+            let parsed = (|| -> Result<Option<Selector>, CssError> {
+                match crate::vendor_css::classify_selector(&selector_source).disposition {
+                    crate::vendor_css::SelectorDisposition::InertWebKitPseudo => return Ok(None),
+                    crate::vendor_css::SelectorDisposition::Unsupported =>
+                        return Err(CssError::UnsupportedSelector(selector_source.clone())),
+                    crate::vendor_css::SelectorDisposition::NativeCandidate => {}
                 }
-                crate::vendor_css::SelectorDisposition::NativeCandidate => {}
+                let mut receipts = Vec::new();
+                collect_selector_translation_receipts(&selector_source, &mut receipts)?;
+                let selector = parse_selector(&selector_source)?;
+                rule_receipts.extend(receipts);
+                Ok(Some(selector))
+            })();
+            match parsed {
+                Ok(Some(selector)) => rule_selectors.push(selector),
+                Ok(None) => {},
+                Err(CssError::UnsupportedSelector(_) |
+                    CssError::CapabilityCompiler(CapabilityCompilerError::UnsupportedSelector(_)))
+                    if browser_mode => {
+                    unsupported_rule = true;
+                    break;
+                }
+                Err(error) => return Err(error),
             }
-            collect_selector_translation_receipts(&selector_source, &mut translations)?;
-            let selector = parse_selector(&selector_source)?;
-            rules.push(Rule {
-                selector,
-                declarations: declarations.clone(),
-                order,
-            });
+        }
+        if unsupported_rule {
+            skipped_selectors += 1;
+        } else {
+            translations.extend(rule_receipts);
+            for selector in rule_selectors {
+                rules.push(Rule { selector, declarations: declarations.clone(), order });
+            }
         }
         order += 1;
     }
-    Ok((StyleSheet { rules }, translations))
+    Ok((StyleSheet { rules }, translations, skipped_selectors, skipped_declarations))
 }
 
 pub fn parse_stylesheet_with_environment(
     input: &str,
     environment: CapabilityEnvironment,
+) -> Result<CompiledStyleSheet, CssError> {
+    parse_stylesheet_with_policy(input, environment, false)
+}
+
+/// Standards-aligned recovery for external web stylesheets. Invalid selectors
+/// invalidate their selector list; unsupported declarations are omitted locally.
+/// Skipped support is recorded rather than silently treated as implemented.
+pub fn parse_stylesheet_browser_with_environment(
+    input: &str,
+    environment: CapabilityEnvironment,
+) -> Result<CompiledStyleSheet, CssError> {
+    parse_stylesheet_with_policy(input, environment, true)
+}
+
+fn parse_stylesheet_with_policy(
+    input: &str,
+    environment: CapabilityEnvironment,
+    browser_mode: bool,
 ) -> Result<CompiledStyleSheet, CssError> {
     // Every native stylesheet now crosses the standards-tokenizer budget gate
     // before capability lowering; this is not merely a detached probe.
@@ -1099,7 +1180,8 @@ pub fn parse_stylesheet_with_environment(
     let compiled = compile_stylesheet_capabilities(&cleaned, environment)?;
     let canonical = crate::css_canonical::parse_stylesheet_structure(&compiled.source)
         .map_err(|error| CssError::MalformedDeclaration(format!("canonical CSS: {error:?}")))?;
-    let (stylesheet, selector_translations) = parse_compiled_stylesheet(&compiled.source)?;
+    let (stylesheet, selector_translations, skipped_selectors, skipped_declarations) =
+        parse_compiled_stylesheet(&compiled.source, browser_mode)?;
     let mut translations = compiled.receipts;
     translations.extend(selector_translations);
     use sha2::{Digest, Sha256};
@@ -1108,6 +1190,8 @@ pub fn parse_stylesheet_with_environment(
         canonical,
         canonical_source_sha256: hex::encode(Sha256::digest(compiled.source.as_bytes())),
         translations,
+        skipped_selectors,
+        skipped_declarations,
     })
 }
 
@@ -1152,6 +1236,20 @@ pub fn stylesheet_from_document(document: &NativeDocument) -> Result<StyleSheet,
 mod tests {
     use super::*;
     use crate::native_html::parse_document;
+
+    #[test]
+    fn browser_css_recovers_invalid_rule_and_value_with_accounting() {
+        let css = "body:not(:has(.unavailable)) { color: red; } \
+                   .valid { color: #123456; display: nonsense; font-size: 22px; }";
+        let browser = parse_stylesheet_browser_with_environment(
+            css, CapabilityEnvironment::default(),
+        ).unwrap();
+        assert_eq!(browser.skipped_selectors, 1);
+        assert_eq!(browser.skipped_declarations, 1);
+        assert_eq!(browser.stylesheet.rules.len(), 1);
+        assert_eq!(browser.stylesheet.rules[0].declarations.len(), 2);
+        assert!(parse_stylesheet_with_environment(css, CapabilityEnvironment::default()).is_err());
+    }
 
     #[test]
     fn parses_compound_selector_specificity() {
@@ -1893,7 +1991,7 @@ mod tests {
     #[test]
     fn unsupported_media_query_remains_fail_closed() {
         let result =
-            parse_stylesheet("@media (prefers-color-scheme:dark) { p { font-size: 20px; } }");
+            parse_stylesheet("@media (prefers-contrast:more) { p { font-size: 20px; } }");
         assert!(matches!(result, Err(CssError::CapabilityCompiler(_))));
     }
 

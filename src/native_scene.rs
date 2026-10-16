@@ -2,6 +2,9 @@
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneCommand {
+    Image {
+        x: f32, y: f32, width: f32, height: f32, src: String,
+    },
     Fill {
         x: f32, y: f32, width: f32, height: f32, rgba: [u8;4],
     },

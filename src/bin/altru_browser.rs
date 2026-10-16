@@ -1,6 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::io::Read;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adaptive_web_engine_fabric::companion_observation::{
@@ -70,6 +72,23 @@ fn validate_https_url(target: &str) -> Result<url::Url, ResourceError> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ResourceError::Denied);
     }
+    if url.host_str().is_some_and(|host|
+        host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost")
+    ) {
+        return Err(ResourceError::Denied);
+    }
+    if let Some(url::Host::Ipv4(ip)) = url.host() {
+        if ip.is_private() || ip.is_loopback() || ip.is_link_local()
+            || ip.is_unspecified() || ip.is_broadcast() {
+            return Err(ResourceError::Denied);
+        }
+    }
+    if let Some(url::Host::Ipv6(ip)) = url.host() {
+        if ip.is_loopback() || ip.is_unique_local()
+            || ip.is_unicast_link_local() || ip.is_unspecified() {
+            return Err(ResourceError::Denied);
+        }
+    }
     Ok(url)
 }
 
@@ -132,7 +151,8 @@ impl ResourceBroker for HttpsDocumentBroker {
                     ResourceError::Transport(format!("invalid redirect target: {error}"))
                 })?;
                 let next = validate_https_url(next.as_str())?;
-                let redirect_allowed = if request.kind == ResourceKind::StyleSheet {
+                let redirect_allowed = if matches!(request.kind,
+                    ResourceKind::StyleSheet | ResourceKind::Image) {
                     // Non-CORS classic stylesheet redirects may change HTTPS origins.
                     // Each redirect is still validated, bounded and recorded.
                     true
@@ -174,6 +194,10 @@ impl ResourceBroker for HttpsDocumentBroker {
                 || media_type.starts_with("application/xhtml+xml")
                 || media_type.starts_with("text/plain"),
             ResourceKind::StyleSheet => media_type.starts_with("text/css"),
+            ResourceKind::Image => media_type.starts_with("image/png")
+                || media_type.starts_with("image/jpeg")
+                || media_type.starts_with("image/webp")
+                || media_type.starts_with("image/gif"),
             _ => false,
         }
         {
@@ -229,6 +253,7 @@ struct AltruBrowserApp {
     mode: ChromeMode,
     request_url_focus: bool,
     dark: bool,
+    textures: RefCell<BTreeMap<String, egui::TextureHandle>>,
 }
 
 impl AltruBrowserApp {
@@ -236,6 +261,8 @@ impl AltruBrowserApp {
         configure_style(&cc.egui_ctx, false);
 
         let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
+        runtime.set_images_enabled(true);
+        runtime.set_external_css_enabled(true);
         let (page, last_error) = match runtime.load(START_URL) {
             Ok(page) => (Some(page), None),
             Err(error) => (None, Some(format_runtime_error(&error))),
@@ -249,10 +276,12 @@ impl AltruBrowserApp {
             mode: ChromeMode::Navigate,
             request_url_focus: false,
             dark: false,
+            textures: RefCell::new(BTreeMap::new()),
         }
     }
 
     fn navigate(&mut self, target: String) {
+        self.textures.borrow_mut().clear();
         let normalized = normalize_target(&target);
         self.url_input = normalized.clone();
         match self.runtime.load(normalized.clone()) {
@@ -277,6 +306,7 @@ impl AltruBrowserApp {
     }
 
     fn back(&mut self) {
+        self.textures.borrow_mut().clear();
         match self.runtime.back() {
             Ok(Some(page)) => {
                 self.url_input = page.target.clone();
@@ -289,6 +319,7 @@ impl AltruBrowserApp {
     }
 
     fn forward(&mut self) {
+        self.textures.borrow_mut().clear();
         match self.runtime.forward() {
             Ok(Some(page)) => {
                 self.url_input = page.target.clone();
@@ -301,6 +332,7 @@ impl AltruBrowserApp {
     }
 
     fn reload(&mut self) {
+        self.textures.borrow_mut().clear();
         match self.runtime.reload() {
             Ok(Some(page)) => {
                 self.url_input = page.target.clone();
@@ -469,6 +501,7 @@ impl AltruBrowserApp {
                 SceneCommand::ColoredText { y, size_px, .. } => y + size_px * 1.8,
                 SceneCommand::Rect { y, height, .. } => y + height,
                 SceneCommand::Fill { y, height, .. } => y + height,
+                SceneCommand::Image { y, height, .. } => y + height,
             })
             .fold(620.0_f32, f32::max);
 
@@ -482,6 +515,29 @@ impl AltruBrowserApp {
 
                 for command in &scene.commands {
                     match command {
+                        SceneCommand::Image { x, y, width, height, src } => {
+                            let image_rect = egui::Rect::from_min_size(
+                                origin + Vec2::new(x * scale, y * scale),
+                                Vec2::new(width * scale, height * scale),
+                            );
+                            if let Some(image) = page.images.get(src) {
+                                let cache_key = format!("{}:{}:{}", page.target, page.navigation_id, src);
+                                let mut textures = self.textures.borrow_mut();
+                                let texture = textures.entry(cache_key.clone()).or_insert_with(|| {
+                                    let pixels = egui::ColorImage::from_rgba_unmultiplied(
+                                        [image.width as usize, image.height as usize], &image.rgba,
+                                    );
+                                    ui.ctx().load_texture(cache_key, pixels, egui::TextureOptions::LINEAR)
+                                });
+                                painter.image(texture.id(), image_rect,
+                                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0,1.0)),
+                                    Color32::WHITE);
+                            } else {
+                                painter.rect_stroke(image_rect, 0.0,
+                                    Stroke::new(1.0, Color32::from_gray(160)),
+                                    egui::StrokeKind::Inside);
+                            }
+                        }
                         SceneCommand::Fill {x,y,width,height,rgba} => {
                             painter.rect_filled(
                                 egui::Rect::from_min_size(
@@ -571,7 +627,12 @@ impl AltruBrowserApp {
                         "Scene",
                         &format!("{} commands", page.execution.scene.commands.len()),
                     );
-                    metric(ui, "Network", "Top-level HTTPS only");
+                    metric(ui, "Network", "Governed HTTPS document + bounded image resources");
+                    metric(ui, "Native CSS skipped", &format!("{} selector lists, {} declarations",
+                        page.execution.skipped_css_selectors,
+                        page.execution.skipped_css_declarations));
+                    metric(ui, "Images", &format!("{} decoded, {} failed",
+                        page.images.len(), page.failed_images));
                     metric(ui, "Scripts", "Disabled");
                     metric(ui, "Telemetry", "None");
                     ui.separator();
@@ -771,7 +832,11 @@ mod tests {
     #[test]
     fn preview_broker_denies_plain_http_and_embedded_credentials() {
         let mut broker = HttpsDocumentBroker::default();
-        for target in ["http://example.com", "https://user:pass@example.com"] {
+        for target in [
+            "http://example.com", "https://user:pass@example.com",
+            "https://127.0.0.1/", "https://192.168.1.12/",
+            "https://localhost/", "https://[::1]/",
+        ] {
             assert_eq!(
                 broker.fetch(&ResourceRequest {
                     request_id: 1,
@@ -826,8 +891,39 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live integration diagnostic: external stylesheet compatibility not promoted"]
+    fn live_cnet_external_css_diagnostic() {
+        let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
+        runtime.set_external_css_enabled(true);
+        let result = runtime.load("https://cnet.com");
+        eprintln!("CNET_EXTERNAL_CSS_DIAGNOSTIC={:?}", result.as_ref().err());
+        assert!(result.is_ok(), "CNET external CSS native pipeline remains blocked");
+    }
+
+    #[test]
+    #[ignore = "live acceptance: bounded native stylesheet and image loading"]
+    fn live_cnet_native_css_and_images() {
+        let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
+        runtime.set_external_css_enabled(true);
+        runtime.set_images_enabled(true);
+        let page = runtime.load("https://cnet.com").expect("full native resources must load");
+        let image_commands = page.execution.scene.commands.iter().filter(|command|
+            matches!(command, SceneCommand::Image { .. })).count();
+        eprintln!("CNET_NATIVE images_decoded={} failed={} scene_images={} css_skipped_selectors={} css_skipped_declarations={}",
+            page.images.len(), page.failed_images, image_commands,
+            page.execution.skipped_css_selectors, page.execution.skipped_css_declarations);
+        for failure in &page.image_failure_reasons {
+            eprintln!("CNET_IMAGE_FAILURE={failure}");
+        }
+        assert!(image_commands > 0, "CNET must produce native image geometry");
+        assert!(!page.images.is_empty(), "CNET must produce at least one decoded native image");
+    }
+
+    #[test]
     fn built_in_start_page_executes_on_native_engine() {
         let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
+        runtime.set_external_css_enabled(true);
+        runtime.set_images_enabled(true);
         let page = runtime.load(START_URL).unwrap();
         assert!(!page.execution.scene.is_empty());
         assert!(page.execution.native_semantics);
