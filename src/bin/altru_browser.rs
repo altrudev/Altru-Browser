@@ -29,14 +29,14 @@ h1 { font-size: 42px; margin-bottom: 8px; }
 </head>
 <body>
 <h1>Altru Browser</h1>
-<p class="lead">Code for Humanity.</p>
+<p class="lead">An independent, native web engine.</p>
 <p>Developer Preview · owned native engine · explicit authority · evidence-gated.</p>
 <div class="row">
   <div class="card"><p>Focus</p><p class="small">The page gets the screen.</p></div>
   <div class="card"><p>Navigate</p><p class="small">Controls appear when needed.</p></div>
   <div class="card"><p>Inspect</p><p class="small">Engine state stays visible on demand.</p></div>
 </div>
-<p class="small">Press Ctrl+L to enter an HTTPS address. Press Esc to return to Focus.</p>
+<p class="small">Press Ctrl+L to enter an HTTPS address. Press Esc for Focus mode; Ctrl+L restores navigation.</p>
 </body>
 </html>
 "#;
@@ -220,7 +220,7 @@ struct AltruBrowserApp {
 
 impl AltruBrowserApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        configure_style(&cc.egui_ctx, false);
+        configure_style(&cc.egui_ctx, true);
 
         let mut runtime = NativeRuntime::new(HttpsDocumentBroker::default());
         let (page, last_error) = match runtime.load(START_URL) {
@@ -235,7 +235,7 @@ impl AltruBrowserApp {
             url_input: START_URL.into(),
             mode: ChromeMode::Navigate,
             request_url_focus: false,
-            dark: false,
+            dark: true,
         }
     }
 
@@ -249,7 +249,7 @@ impl AltruBrowserApp {
                 ));
                 self.page = Some(page);
                 self.last_error = None;
-                self.mode = ChromeMode::Focus;
+                self.mode = ChromeMode::Navigate;
             }
             Err(error) => {
                 let _ = append_local_observation(&BrowserCapabilityObservation::failure(
@@ -307,6 +307,15 @@ impl AltruBrowserApp {
         if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.mode = ChromeMode::Focus;
         }
+        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::R)) {
+            self.reload();
+        }
+        if ctx.input(|input| input.modifiers.alt && input.key_pressed(egui::Key::ArrowLeft)) {
+            self.back();
+        }
+        if ctx.input(|input| input.modifiers.alt && input.key_pressed(egui::Key::ArrowRight)) {
+            self.forward();
+        }
         if ctx.input(|input| input.key_pressed(egui::Key::F9)) {
             self.mode = if self.mode == ChromeMode::Inspect {
                 ChromeMode::Focus
@@ -318,54 +327,68 @@ impl AltruBrowserApp {
 
     fn navigation_bar(&mut self, ctx: &egui::Context) {
         let panel = egui::TopBottomPanel::top("altru_navigation")
-            .exact_height(56.0)
+            .exact_height(64.0)
             .frame(
                 egui::Frame::new()
                     .fill(if self.dark {
-                        Color32::from_rgb(11, 25, 39)
+                        Color32::from_rgb(13, 31, 49)
                     } else {
-                        Color32::from_rgb(249, 251, 253)
+                        Color32::from_rgb(247, 250, 253)
                     })
-                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .inner_margin(egui::Margin::symmetric(14, 11))
                     .stroke(Stroke::new(
-                        1.0_f32,
+                        1.0,
                         if self.dark {
-                            Color32::from_rgba_unmultiplied(101, 199, 255, 35)
+                            Color32::from_rgb(48, 76, 99)
                         } else {
-                            Color32::from_rgba_unmultiplied(23, 63, 91, 22)
+                            Color32::from_rgb(210, 221, 230)
                         },
                     )),
             );
-
         panel.show(ctx, |ui| {
-            draw_embossed_motif(ui);
-
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-
+                ui.spacing_mut().item_spacing.x = 7.0;
+                ui.label(
+                    RichText::new("Altru")
+                        .size(18.0)
+                        .strong()
+                        .color(if self.dark {
+                            Color32::from_rgb(234, 244, 250)
+                        } else {
+                            Color32::from_rgb(21, 43, 65)
+                        }),
+                );
+                ui.add_space(9.0);
                 if ui
-                    .button(RichText::new("‹").size(24.0))
+                    .add(egui::Button::new("‹").min_size(Vec2::new(33.0, 36.0)))
                     .on_hover_text("Back")
                     .clicked()
                 {
                     self.back();
                 }
                 if ui
-                    .button(RichText::new("›").size(24.0))
+                    .add(egui::Button::new("›").min_size(Vec2::new(33.0, 36.0)))
                     .on_hover_text("Forward")
                     .clicked()
                 {
                     self.forward();
                 }
-                if ui.button("↻").on_hover_text("Reload").clicked() {
+                if ui
+                    .button("↻")
+                    .on_hover_text("Reload page (Ctrl+R)")
+                    .clicked()
+                {
                     self.reload();
                 }
-
-                let available = (ui.available_width() - 250.0).max(220.0);
+                if ui.button("⌂").on_hover_text("Altru start page").clicked() {
+                    self.navigate(START_URL.to_string());
+                }
+                let room = ui.available_width();
+                let available = (room - 241.0).max(120.0);
                 let response = ui.add_sized(
-                    [available, 38.0],
+                    [available, 37.0],
                     egui::TextEdit::singleline(&mut self.url_input)
-                        .hint_text("Search or enter an HTTPS address")
+                        .hint_text("HTTPS address or altru://start")
                         .desired_width(f32::INFINITY),
                 );
                 if self.request_url_focus {
@@ -376,28 +399,73 @@ impl AltruBrowserApp {
                 if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                     self.navigate(self.url_input.clone());
                 }
-
-                if ui.button("Go").clicked() {
+                if ui
+                    .button("Go")
+                    .on_hover_text("Navigate to address")
+                    .clicked()
+                {
                     self.navigate(self.url_input.clone());
                 }
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .selectable_label(self.mode == ChromeMode::Inspect, "Inspect")
-                        .clicked()
-                    {
-                        self.mode = ChromeMode::Inspect;
-                    }
-                    if ui.button(if self.dark { "☀" } else { "◐" }).clicked() {
-                        self.dark = !self.dark;
-                        configure_style(ctx, self.dark);
-                    }
-                    if ui.button("Focus").clicked() {
-                        self.mode = ChromeMode::Focus;
-                    }
-                });
+                ui.separator();
+                if ui
+                    .selectable_label(self.mode == ChromeMode::Inspect, "Inspect")
+                    .on_hover_text("Page Intelligence (F9)")
+                    .clicked()
+                {
+                    self.mode = if self.mode == ChromeMode::Inspect {
+                        ChromeMode::Navigate
+                    } else {
+                        ChromeMode::Inspect
+                    };
+                }
+                if ui
+                    .button(if self.dark { "Light" } else { "Dark" })
+                    .on_hover_text("Switch color theme")
+                    .clicked()
+                {
+                    self.dark = !self.dark;
+                    configure_style(ctx, self.dark);
+                }
+                if ui
+                    .button("Focus")
+                    .on_hover_text("Hide toolbar (Esc)")
+                    .clicked()
+                {
+                    self.mode = ChromeMode::Focus;
+                }
             });
         });
+    }
+
+    fn status_bar(&self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("altru_status")
+            .exact_height(27.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(if self.dark {
+                        Color32::from_rgb(11, 25, 39)
+                    } else {
+                        Color32::from_rgb(242, 247, 250)
+                    })
+                    .inner_margin(egui::Margin::symmetric(14, 5)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let status = if self.last_error.is_some() {
+                        "Page blocked or unavailable"
+                    } else {
+                        "Native engine · Developer preview"
+                    };
+                    ui.label(RichText::new(status).size(11.0).color(if self.dark {
+                        Color32::from_rgb(167, 198, 216)
+                    } else {
+                        Color32::from_rgb(78, 102, 118)
+                    }));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new("Not production-promoted").size(11.0).weak());
+                    });
+                });
+            });
     }
 
     fn focus_reveal(&mut self, ctx: &egui::Context) {
@@ -580,6 +648,8 @@ impl eframe::App for AltruBrowserApp {
             self.focus_reveal(ctx);
         }
 
+        self.status_bar(ctx);
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -677,33 +747,12 @@ fn short_hash(hash: &str) -> String {
     }
 }
 
-fn draw_embossed_motif(ui: &egui::Ui) {
-    let rect = ui.max_rect();
-    let painter = ui.painter();
-    let y = rect.top() + 2.0;
-    let base_x = rect.center().x - 42.0;
-    let blue = Color32::from_rgba_unmultiplied(55, 132, 214, 22);
-    let wheat = Color32::from_rgba_unmultiplied(230, 177, 44, 20);
-
-    for index in 0..5 {
-        let x = base_x + index as f32 * 21.0;
-        let color = if index % 2 == 0 { blue } else { wheat };
-        painter.line_segment(
-            [egui::pos2(x, y + 4.0), egui::pos2(x + 8.0, y + 10.0)],
-            Stroke::new(1.0_f32, color),
-        );
-        painter.line_segment(
-            [egui::pos2(x + 8.0, y + 10.0), egui::pos2(x + 16.0, y + 4.0)],
-            Stroke::new(1.0_f32, color),
-        );
-    }
-}
-
 fn icon_data() -> egui::IconData {
-    let image =
-        image::load_from_memory(include_bytes!("../../assets/brand/altru-browser-mark.png"))
-            .expect("embedded Altru Browser icon must decode")
-            .into_rgba8();
+    let image = image::load_from_memory(include_bytes!(
+        "../../assets/brand/altru-browser-approved-app.png"
+    ))
+    .expect("embedded Altru Browser icon must decode")
+    .into_rgba8();
     let (width, height) = image.dimensions();
     egui::IconData {
         rgba: image.into_raw(),
@@ -732,7 +781,7 @@ mod tests {
         assert!(
             String::from_utf8(response.body)
                 .unwrap()
-                .contains("Code for Humanity")
+                .contains("An independent, native web engine.")
         );
     }
 
