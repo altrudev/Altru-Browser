@@ -348,6 +348,7 @@ impl AltruBrowserApp {
         panel.show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 7.0;
+                let compact = ui.available_width() < 930.0;
                 ui.label(
                     RichText::new("Altru")
                         .size(18.0)
@@ -358,7 +359,7 @@ impl AltruBrowserApp {
                             Color32::from_rgb(21, 43, 65)
                         }),
                 );
-                ui.add_space(9.0);
+                ui.add_space(if compact { 2.0 } else { 9.0 });
                 if ui
                     .add(egui::Button::new("‹").min_size(Vec2::new(33.0, 36.0)))
                     .on_hover_text("Back")
@@ -384,7 +385,8 @@ impl AltruBrowserApp {
                     self.navigate(START_URL.to_string());
                 }
                 let room = ui.available_width();
-                let available = (room - 241.0).max(120.0);
+                let reserved = if compact { 134.0 } else { 241.0 };
+                let available = (room - reserved).max(120.0);
                 let response = ui.add_sized(
                     [available, 37.0],
                     egui::TextEdit::singleline(&mut self.url_input)
@@ -408,7 +410,10 @@ impl AltruBrowserApp {
                 }
                 ui.separator();
                 if ui
-                    .selectable_label(self.mode == ChromeMode::Inspect, "Inspect")
+                    .selectable_label(
+                        self.mode == ChromeMode::Inspect,
+                        if compact { "ⓘ" } else { "Inspect" },
+                    )
                     .on_hover_text("Page Intelligence (F9)")
                     .clicked()
                 {
@@ -419,7 +424,13 @@ impl AltruBrowserApp {
                     };
                 }
                 if ui
-                    .button(if self.dark { "Light" } else { "Dark" })
+                    .button(if compact {
+                        "◐"
+                    } else if self.dark {
+                        "Light"
+                    } else {
+                        "Dark"
+                    })
                     .on_hover_text("Switch color theme")
                     .clicked()
                 {
@@ -427,7 +438,7 @@ impl AltruBrowserApp {
                     configure_style(ctx, self.dark);
                 }
                 if ui
-                    .button("Focus")
+                    .button(if compact { "⛶" } else { "Focus" })
                     .on_hover_text("Hide toolbar (Esc)")
                     .clicked()
                 {
@@ -838,6 +849,34 @@ mod tests {
         assert!(!page.execution.scene.is_empty());
         assert!(page.execution.native_semantics);
         assert!(!page.execution.production_promoted);
+    }
+
+    #[test]
+    fn native_toolbar_handles_compact_and_wide_viewports() {
+        for width in [720.0, 920.0, 1280.0, 1920.0] {
+            let ctx = egui::Context::default();
+            configure_style(&ctx, true);
+            let mut app = AltruBrowserApp {
+                runtime: NativeRuntime::new(HttpsDocumentBroker::default()),
+                page: None,
+                last_error: None,
+                url_input: START_URL.into(),
+                mode: ChromeMode::Navigate,
+                request_url_focus: false,
+                dark: true,
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(width, 820.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| app.navigation_bar(ctx));
+            assert!(!output.shapes.is_empty(), "empty toolbar at {width}");
+            assert_eq!(app.mode, ChromeMode::Navigate);
+            assert_eq!(app.url_input, START_URL);
+        }
     }
 
     #[test]
