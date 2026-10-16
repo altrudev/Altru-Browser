@@ -1087,6 +1087,10 @@ pub fn parse_stylesheet_with_environment(
     input: &str,
     environment: CapabilityEnvironment,
 ) -> Result<CompiledStyleSheet, CssError> {
+    // Every native stylesheet now crosses the standards-tokenizer budget gate
+    // before capability lowering; this is not merely a detached probe.
+    crate::css_standards::audit_css_tokens(input)
+        .map_err(|reason| CssError::MalformedDeclaration(reason.into()))?;
     let cleaned = strip_css_comments(input)?;
     let compiled = compile_stylesheet_capabilities(&cleaned, environment)?;
     let canonical = crate::css_canonical::parse_stylesheet_structure(&compiled.source)
