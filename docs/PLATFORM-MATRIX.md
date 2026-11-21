@@ -11,6 +11,7 @@ A platform is never promoted because another operating system passed.
 | Windows | `x86_64-pc-windows-gnu` or MSVC on Windows | Planned | native Windows build + UI/renderer probe |
 | macOS | `aarch64-apple-darwin` | Planned | native macOS build + Metal/window/accessibility probe |
 | iOS/iPadOS | `aarch64-apple-ios` | Planned/policy-gated | entitled host + runtime probe where permitted |
+| Altru Metal (Linux, no desktop) | `x86_64-unknown-linux-gnu` | Experimental sketch, see `docs/ALTRU-METAL.md` | `metal_probe` on real hardware (reference: Lenovo G700) |
 
 ## Compile gate
 

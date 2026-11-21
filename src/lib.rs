@@ -25,6 +25,8 @@ pub mod native_runtime;
 pub mod native_scene;
 pub mod native_style;
 pub mod platform;
+#[cfg(target_os = "linux")]
+pub mod platform_metal;
 pub mod receipt;
 pub mod resource_api;
 pub mod script_engine;
