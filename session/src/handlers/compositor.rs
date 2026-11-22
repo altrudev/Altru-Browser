@@ -28,6 +28,7 @@ impl CompositorHandler for AltruSession {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        self.needs_redraw = true;
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();

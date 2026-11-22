@@ -20,9 +20,72 @@ pub struct App {
 fn app(label: &'static str, command: &str, package: &'static str) -> App {
     App {
         label,
-        argv: command.split_whitespace().map(str::to_string).collect(),
+        argv: split_command(command).expect("built-in commands are well formed"),
         package,
     }
+}
+
+/// Split a command line into arguments, shell-style but without a shell:
+/// whitespace separates, '...' is literal, "..." allows \" and \\, and a
+/// backslash outside quotes escapes the next character. Nothing is expanded.
+pub fn split_command(command: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_arg = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_arg = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => current.push(c),
+                        None => return Err(format!("unclosed ' in {command:?}")),
+                    }
+                }
+            }
+            '"' => {
+                in_arg = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some(c @ ('"' | '\\')) => current.push(c),
+                            Some(c) => {
+                                current.push('\\');
+                                current.push(c);
+                            }
+                            None => return Err(format!("unclosed \" in {command:?}")),
+                        },
+                        Some(c) => current.push(c),
+                        None => return Err(format!("unclosed \" in {command:?}")),
+                    }
+                }
+            }
+            '\\' => {
+                in_arg = true;
+                match chars.next() {
+                    Some(c) => current.push(c),
+                    None => return Err(format!("trailing \\ in {command:?}")),
+                }
+            }
+            c if c.is_whitespace() => {
+                if in_arg {
+                    args.push(std::mem::take(&mut current));
+                    in_arg = false;
+                }
+            }
+            c => {
+                in_arg = true;
+                current.push(c);
+            }
+        }
+    }
+    if in_arg {
+        args.push(current);
+    }
+    Ok(args)
 }
 
 /// Built-in profiles. Main tool first.
@@ -76,11 +139,14 @@ pub fn parse_args(args: &[String]) -> Plan {
             },
             // `-c` / `--command` kept for compatibility with smallvil.
             "--run" | "-r" | "-c" | "--command" => match iter.next() {
-                Some(command) if !command.trim().is_empty() => plan.apps.push(App {
-                    label: "custom",
-                    argv: command.split_whitespace().map(str::to_string).collect(),
-                    package: "",
-                }),
+                Some(command) if !command.trim().is_empty() => match split_command(command) {
+                    Ok(argv) => plan.apps.push(App {
+                        label: "custom",
+                        argv,
+                        package: "",
+                    }),
+                    Err(error) => plan.errors.push(error),
+                },
                 _ => plan.errors.push(format!("{arg} needs a command")),
             },
             other => plan.errors.push(format!("unknown argument {other:?}")),
@@ -130,6 +196,22 @@ mod tests {
         let plan = parse_args(&args(&["--profile", "games", "--run", "  ", "--wat"]));
         assert_eq!(plan.errors.len(), 3);
         assert!(plan.errors[0].contains("studio, art, dev"));
+    }
+
+    #[test]
+    fn splits_commands_like_a_shell_without_running_one() {
+        assert_eq!(
+            split_command(r#"foot -e sh -c 'echo hi; uname -a'"#).unwrap(),
+            ["foot", "-e", "sh", "-c", "echo hi; uname -a"]
+        );
+        assert_eq!(
+            split_command(r#"a "b \"c\" d" e\ f ''"#).unwrap(),
+            ["a", r#"b "c" d"#, "e f", ""]
+        );
+        assert_eq!(split_command("  x   $HOME  ").unwrap(), ["x", "$HOME"]);
+        assert!(split_command("echo 'open").is_err());
+        assert!(split_command("echo \"open").is_err());
+        assert!(split_command("trailing\\").is_err());
     }
 
     #[test]

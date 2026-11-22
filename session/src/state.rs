@@ -33,6 +33,8 @@ pub struct AltruSession {
     pub space: Space<Window>,
     /// Windows in layout order: the first is the main (left) window.
     pub tiled: Vec<Window>,
+    /// Something on screen changed since the last frame.
+    pub needs_redraw: bool,
     pub loop_signal: LoopSignal,
 
     // Smithay State
@@ -90,6 +92,7 @@ impl AltruSession {
 
             space,
             tiled: Vec::new(),
+            needs_redraw: true,
             loop_signal,
             socket_name,
 
@@ -152,6 +155,7 @@ impl AltruSession {
     /// Lay every window out again with `crate::layout::tiles`.
     /// Called when a window opens or closes and when the screen size changes.
     pub fn retile(&mut self) {
+        self.needs_redraw = true;
         self.tiled.retain(|window| window.alive());
         let Some(output) = self.space.outputs().next().cloned() else {
             return;
