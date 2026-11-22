@@ -164,7 +164,7 @@ impl AltruSession {
     pub fn add_tiled(&mut self, window: Window) {
         let pid = window
             .toplevel()
-            .and_then(|toplevel| toplevel.wl_surface().client())
+            .and_then(|toplevel| toplevel.client())
             .and_then(|client| client.get_credentials(&self.display_handle).ok())
             .map(|credentials| credentials.pid as u32);
         let rank = pid
