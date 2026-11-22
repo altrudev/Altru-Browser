@@ -294,8 +294,8 @@ impl LinuxFramebuffer {
         let mut row_bytes = vec![0u8; width * 4];
         for row in 0..height {
             let source = &frame.pixels[row * frame.width as usize..][..width];
-            for (chunk, pixel) in row_bytes.chunks_exact_mut(4).zip(source) {
-                chunk.copy_from_slice(&pixel.to_le_bytes());
+            for (index, pixel) in source.iter().enumerate() {
+                row_bytes[index * 4..index * 4 + 4].copy_from_slice(&pixel.to_le_bytes());
             }
             let offset = row as u64 * self.geometry.stride_bytes as u64;
             self.device.write_all_at(&row_bytes, offset)?;
