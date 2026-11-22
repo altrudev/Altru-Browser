@@ -48,12 +48,12 @@ impl XdgShellHandler for AltruSession {
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() != wl_surface)
         });
-        if let Some(window) = self
+        let closed = self
             .space
             .elements()
             .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl_surface))
-            .cloned()
-        {
+            .cloned();
+        if let Some(window) = closed {
             self.space.unmap_elem(&window);
         }
         self.retile();
