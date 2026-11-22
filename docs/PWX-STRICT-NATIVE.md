@@ -85,10 +85,24 @@ sudo ./target/debug/strict_probe fixtures/pwx-strict/notes-seeded.strict \
 The HTML export is the differential reference: the same tree in Chromium should look
 like the PWX Notes app, and the native rendering is measured against it.
 
+## Native layout vs. Chromium (Notes, 1000 px wide)
+
+With `--font` (DejaVu Sans) native layout follows the CSS: the sidebar is 280 px
+(34% capped by `max-width`), the editor takes the rest (`flex: 1`), "New note" and
+"Delete" sit at the right edge (`justify-content: space-between`), and the status
+line is centred within half a pixel of Chromium.
+
+Every x position is 16 px to the right of Chromium's, because the engine still
+starts pages at a fixed 16 px margin instead of reading `body { margin: 0 }`, and
+has no horizontal margins yet. Vertical positions use estimated line heights.
+
+Without `--font`, items with author sizing (the sidebar, the editor) are already
+correct; content-sized items (buttons, labels) share their row equally, because
+layout never guesses a text width.
+
 ## Next
 
-1. Run `notes_render_through_native_style_and_layout` with `taffy-layout` and fix
-   what native layout gets wrong against the Chromium reference.
+1. Page margin from `body`/`html` CSS, and horizontal margins.
 2. Boa behind `ScriptEngine` runs the app's code with `PwxUI` as its only host object.
 3. Hit testing from layout fragments back to app node ids (`native_for`), so clicks
    and typing on Altru Metal reach the app.
