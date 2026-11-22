@@ -30,7 +30,7 @@ use smithay::{
         egl::{EGLContext, EGLDevice, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            ImportAll, ImportDma, ImportMem, ImportMemWl,
+            ImportDma, ImportMemWl,
             element::{
                 Kind,
                 solid::{SolidColorBuffer, SolidColorRenderElement},
@@ -72,9 +72,9 @@ const CLEAR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
 const FRAME: Duration = Duration::from_micros(16_667);
 
 smithay::backend::renderer::element::render_elements! {
-    pub SessionElement<R> where R: ImportAll + ImportMem;
-    Space=SpaceRenderElements<R, WaylandSurfaceRenderElement<R>>,
-    Surface=WaylandSurfaceRenderElement<R>,
+    pub SessionElement<=GlesRenderer>;
+    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
 }
 
@@ -321,7 +321,7 @@ fn connect_screens(
         x += wl_mode.size.w;
 
         let hw = manager
-            .initialize_output::<_, SessionElement<GlesRenderer>>(
+            .initialize_output::<_, SessionElement>(
                 crtc,
                 mode,
                 &[info.handle()],
@@ -369,7 +369,7 @@ fn render_all(state: &mut AltruSession) -> bool {
         let Some(geometry) = state.space.output_geometry(&screen.output) else {
             continue;
         };
-        let mut elements: Vec<SessionElement<GlesRenderer>> = Vec::new();
+        let mut elements: Vec<SessionElement> = Vec::new();
 
         // Cursor first: elements are front to back.
         if geometry.to_f64().contains(pointer_location) {
