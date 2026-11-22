@@ -30,7 +30,7 @@ use smithay::{
         egl::{EGLContext, EGLDevice, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            ImportDma, ImportMemWl,
+            ImportAll, ImportDma, ImportMem, ImportMemWl,
             element::{
                 Kind,
                 solid::{SolidColorBuffer, SolidColorRenderElement},
@@ -72,7 +72,7 @@ const CLEAR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
 const FRAME: Duration = Duration::from_micros(16_667);
 
 smithay::backend::renderer::element::render_elements! {
-    pub SessionElement<R> where R: smithay::backend::renderer::ImportAll + smithay::backend::renderer::ImportMem;
+    pub SessionElement<R> where R: ImportAll + ImportMem;
     Space=SpaceRenderElements<R, WaylandSurfaceRenderElement<R>>,
     Surface=WaylandSurfaceRenderElement<R>,
     Solid=SolidColorRenderElement,
