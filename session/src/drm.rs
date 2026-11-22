@@ -121,7 +121,12 @@ pub fn init_drm(
             &gpu_path,
             OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
         )
-        .map_err(|e| err("open GPU", e))?;
+        .map_err(|e| {
+            err(
+                "open GPU (start Altru Session from a text console on this machine, e.g. Ctrl+Alt+F3, not over SSH)",
+                e,
+            )
+        })?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let (drm, drm_events) = DrmDevice::new(fd.clone(), true).map_err(|e| err("DRM device", e))?;
     let gbm = GbmDevice::new(fd.clone()).map_err(|e| err("GBM device", e))?;

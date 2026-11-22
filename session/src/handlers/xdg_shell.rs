@@ -194,10 +194,8 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
                 .initial_configure_sent
         });
 
-        if !initial_configure_sent {
-            if let Some(toplevel) = window.toplevel() {
-                toplevel.send_configure();
-            }
+        if !initial_configure_sent && let Some(toplevel) = window.toplevel() {
+            toplevel.send_configure();
         }
     }
 
