@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
     input::{
         keyboard::FilterResult,
@@ -11,6 +11,7 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 
+use crate::shortcuts::{Action, Mods, action_for};
 use crate::state::AltruSession;
 
 impl AltruSession {
@@ -19,15 +20,32 @@ impl AltruSession {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
+                let pressed = event.state() == KeyState::Pressed;
 
-                self.seat.get_keyboard().unwrap().input::<(), _>(
+                let action = self.seat.get_keyboard().unwrap().input::<Action, _>(
                     self,
                     event.key_code(),
                     event.state(),
                     serial,
                     time,
-                    |_, _, _| FilterResult::Forward,
+                    |_, modifiers, handle| {
+                        let mods = Mods {
+                            logo: modifiers.logo,
+                            shift: modifiers.shift,
+                            ctrl: modifiers.ctrl,
+                            alt: modifiers.alt,
+                        };
+                        match action_for(mods, handle.modified_sym().raw()) {
+                            // Session shortcuts never reach the app, press or release.
+                            Some(action) if pressed => FilterResult::Intercept(action),
+                            Some(_) => FilterResult::Intercept(Action::None),
+                            None => FilterResult::Forward,
+                        }
+                    },
                 );
+                if let Some(action) = action {
+                    self.run_action(action);
+                }
             }
             InputEvent::PointerMotion { .. } => {}
             InputEvent::PointerMotionAbsolute { event, .. } => {

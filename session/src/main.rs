@@ -18,6 +18,7 @@ mod handlers;
 mod input;
 mod layout;
 mod profile;
+mod shortcuts;
 mod state;
 mod winit;
 
@@ -94,24 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             continue;
         }
-        // Apps join this session only: Wayland toolkits are selected, and DISPLAY is
-        // removed so nothing silently opens on another (X11) desktop instead.
-        let spawned = std::process::Command::new(program)
-            .args(&app.argv[1..])
-            .env("WAYLAND_DISPLAY", &data.state.socket_name)
-            .env("XDG_SESSION_TYPE", "wayland")
-            .env("GDK_BACKEND", "wayland")
-            .env("QT_QPA_PLATFORM", "wayland")
-            .env("SDL_VIDEODRIVER", "wayland")
-            .env("MOZ_ENABLE_WAYLAND", "1")
-            .env("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
-            .env_remove("DISPLAY")
-            .spawn();
-        match spawned {
-            Ok(child) => {
-                data.state.launch_order.push(child.id());
-                println!("started: {} (pid {})", app.argv.join(" "), child.id());
-            }
+        match data.state.launch(&app.argv) {
+            Ok(pid) => println!("started: {} (pid {pid})", app.argv.join(" ")),
             Err(error) => eprintln!("failed: {}: {error}", app.argv.join(" ")),
         }
     }

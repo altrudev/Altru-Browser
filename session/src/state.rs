@@ -12,7 +12,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{IsAlive, Logical, Point},
+    utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState, with_states},
         output::OutputManagerState,
@@ -24,6 +24,7 @@ use smithay::{
 };
 
 use crate::CalloopData;
+use crate::shortcuts::{Action, cycle};
 
 pub struct AltruSession {
     pub start_time: std::time::Instant,
@@ -179,6 +180,88 @@ impl AltruSession {
             .partition_point(|existing| *existing <= rank);
         self.tiled.insert(at, window);
         self.tiled_rank.insert(at, rank);
+    }
+
+    /// Start a program on this session. Wayland toolkits are selected and DISPLAY
+    /// is removed so nothing silently opens on another (X11) desktop.
+    pub fn launch(&mut self, argv: &[String]) -> std::io::Result<u32> {
+        let (program, args) = argv.split_first().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command")
+        })?;
+        let child = std::process::Command::new(program)
+            .args(args)
+            .env("WAYLAND_DISPLAY", &self.socket_name)
+            .env("XDG_SESSION_TYPE", "wayland")
+            .env("GDK_BACKEND", "wayland")
+            .env("QT_QPA_PLATFORM", "wayland")
+            .env("SDL_VIDEODRIVER", "wayland")
+            .env("MOZ_ENABLE_WAYLAND", "1")
+            .env("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
+            .env_remove("DISPLAY")
+            .spawn()?;
+        self.launch_order.push(child.id());
+        Ok(child.id())
+    }
+
+    fn focused_index(&self) -> Option<usize> {
+        let focus = self.seat.get_keyboard()?.current_focus()?;
+        self.tiled
+            .iter()
+            .position(|w| w.toplevel().is_some_and(|t| *t.wl_surface() == focus))
+    }
+
+    /// Give keyboard focus to the window at layout position `index`.
+    pub fn focus_index(&mut self, index: usize) {
+        let Some(window) = self.tiled.get(index).cloned() else {
+            return;
+        };
+        let Some(surface) = window.toplevel().map(|t| t.wl_surface().clone()) else {
+            return;
+        };
+        self.space.raise_element(&window, true);
+        let keyboard = self.seat.get_keyboard().unwrap();
+        keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
+        self.needs_redraw = true;
+    }
+
+    pub fn run_action(&mut self, action: Action) {
+        match action {
+            Action::FocusNext | Action::FocusPrevious => {
+                let forward = action == Action::FocusNext;
+                if let Some(index) = cycle(self.focused_index(), self.tiled.len(), forward) {
+                    self.focus_index(index);
+                }
+            }
+            Action::FocusIndex(index) => self.focus_index(index),
+            Action::MakeMain => {
+                if let Some(index) = self.focused_index().filter(|i| *i > 0) {
+                    let window = self.tiled.remove(index);
+                    self.tiled_rank.remove(index);
+                    let first_rank = self.tiled_rank.first().copied().unwrap_or(usize::MAX);
+                    self.tiled.insert(0, window);
+                    self.tiled_rank.insert(0, first_rank);
+                    self.retile();
+                    self.focus_index(0);
+                }
+            }
+            Action::OpenTerminal => {
+                if let Err(error) = self.launch(&["foot".to_string()]) {
+                    eprintln!("altru-session: could not open a terminal: {error}");
+                }
+            }
+            Action::Close => {
+                if let Some(index) = self.focused_index()
+                    && let Some(toplevel) = self.tiled[index].toplevel()
+                {
+                    toplevel.send_close();
+                }
+            }
+            Action::Quit => self.loop_signal.stop(),
+            Action::None => {}
+        }
+        if action != Action::None {
+            println!("shortcut: {action:?}");
+        }
     }
 
     /// Remove the window showing `surface` from the layout.

@@ -37,8 +37,12 @@ impl XdgShellHandler for AltruSession {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window.clone(), (0, 0), false);
-        self.add_tiled(window);
+        self.add_tiled(window.clone());
         self.retile();
+        // New windows get the keyboard, so you can type straight away.
+        if let Some(index) = self.tiled.iter().position(|w| *w == window) {
+            self.focus_index(index);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
