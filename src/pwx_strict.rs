@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::native_css::{CssError, StyleSheet, parse_stylesheet};
 use crate::native_dom::{Attribute, NativeDocument, NodeId};
-use crate::native_layout::{layout_document_with_styles, scene_from_layout};
+use crate::native_layout::{TextMeasurer, layout_document_with_measurer, scene_from_layout};
 use crate::native_scene::Scene;
 
 // ---------------------------------------------------------------------------
@@ -732,7 +732,19 @@ pub struct StrictSnapshot {
 
 impl StrictSnapshot {
     pub fn scene(&self, sheet: &StyleSheet, viewport_width: f32) -> Result<Scene, CssError> {
-        let layout = layout_document_with_styles(&self.document, sheet, viewport_width)?;
+        self.scene_measured(sheet, viewport_width, None)
+    }
+
+    /// As `scene`, with real text widths so content-sized items (buttons, labels)
+    /// take their own width instead of sharing the row equally.
+    pub fn scene_measured(
+        &self,
+        sheet: &StyleSheet,
+        viewport_width: f32,
+        measurer: Option<&dyn TextMeasurer>,
+    ) -> Result<Scene, CssError> {
+        let layout =
+            layout_document_with_measurer(&self.document, sheet, viewport_width, measurer)?;
         Ok(scene_from_layout(&layout))
     }
 }
@@ -1079,6 +1091,61 @@ mod tests {
             bridge.snapshot().scene(&sheet, 1600.0),
             Err(CssError::UnsupportedLayout(_))
         ));
+    }
+
+    /// Test double: every character is half the font size wide. Real runs use
+    /// `FontFaceMeasurer` with a resolved font face.
+    #[cfg(feature = "taffy-layout")]
+    struct HalfEm;
+    #[cfg(feature = "taffy-layout")]
+    impl TextMeasurer for HalfEm {
+        fn max_content_px(&self, text: &str, font_size_px: f32) -> Option<f32> {
+            Some(text.chars().count() as f32 * font_size_px * 0.5)
+        }
+    }
+
+    #[cfg(feature = "taffy-layout")]
+    #[test]
+    fn notes_layout_matches_the_css_proportions() {
+        use crate::native_layout::layout_document_with_measurer;
+        let (sheet, _) = native_ui_stylesheet(UI_CSS, ColorScheme::Light).unwrap();
+        let (bridge, _) = run(NOTES_SEEDED);
+        let snapshot = bridge.snapshot();
+        let find = |layout: &crate::native_layout::LayoutTree, text: &str| {
+            layout
+                .fragments
+                .iter()
+                .find(|f| f.text.as_deref() == Some(text))
+                .cloned()
+                .unwrap_or_else(|| panic!("{text} not laid out"))
+        };
+
+        // Viewport 1600: the engine's page origin is x=16 with width 1568, so the
+        // bar's content box (padding 16) spans x=32..1568.
+        let measured =
+            layout_document_with_measurer(&snapshot.document, &sheet, 1600.0, Some(&HalfEm))
+                .unwrap();
+
+        // Sidebar: 34% of 1568 = 533, capped by max-width 280. List padding 8 + item padding 10.
+        let groceries = find(&measured, "Groceries");
+        assert_eq!(groceries.x, 16.0 + 8.0 + 10.0);
+        assert_eq!(groceries.width, 280.0 - 16.0 - 20.0);
+        // Editor starts where the sidebar ends (editor padding 16).
+        let open_title = find(&measured, "Ask about Thursday night");
+        assert_eq!(open_title.x, 16.0 + 280.0 + 16.0 + 10.0);
+
+        // Header: space-between puts "New note" against the right edge.
+        let new_note = find(&measured, "New note");
+        assert_eq!(new_note.x + new_note.width + 12.0, 1568.0);
+        let title = find(&measured, "Notes");
+        assert_eq!(title.x, 32.0);
+
+        // Without a measurer, auto items still share the row (no guessed widths),
+        // but author-sized items (the sidebar) already follow the CSS.
+        let unmeasured =
+            layout_document_with_measurer(&snapshot.document, &sheet, 1600.0, None).unwrap();
+        assert_eq!(find(&unmeasured, "Groceries").width, 280.0 - 16.0 - 20.0);
+        assert!(find(&unmeasured, "New note").width > new_note.width + 100.0);
     }
 
     #[cfg(feature = "taffy-layout")]

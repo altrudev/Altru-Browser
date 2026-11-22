@@ -5,12 +5,17 @@
 
 use crate::native_css::StyleSheet;
 use crate::native_dom::{NativeDocument, NodeId, NodeKind};
-use crate::native_layout_taffy::{GeometryChild, GeometryMode, GeometryRequest, solve_geometry};
+use crate::intrinsic_measurement::IntrinsicMeasurement;
+use crate::intrinsic_text::measure_ascii_text;
+use crate::native_layout_taffy::{
+    GeometryAlign, GeometryChild, GeometryJustify, GeometryMode, GeometryRequest, solve_geometry,
+};
 use crate::native_scene::{Scene, SceneCommand};
 use crate::capability_ir::AcirPseudoElement;
 use crate::interaction_state::InteractionSnapshot;
 use crate::native_style::{
-    ComputedStyle, Display, FlexDirection, ResolvedStyle, resolve_generated_pseudo_for_element,
+    AlignItems, ComputedStyle, Display, FlexDirection, JustifyContent, ResolvedStyle,
+    resolve_generated_pseudo_for_element,
     resolve_pseudo_style_for_element, resolve_styles,
 };
 
@@ -125,6 +130,147 @@ fn emit_generated_text(
     Ok(())
 }
 
+/// Supplies intrinsic text widths from real font metrics.
+///
+/// Layout never guesses a text width. Without a measurer, or when a text can't be
+/// measured, auto-sized flex items keep the engine's original behavior of sharing
+/// the free space equally.
+pub trait TextMeasurer {
+    /// Max-content inline width in CSS pixels, or `None` if unmeasurable.
+    fn max_content_px(&self, text: &str, font_size_px: f32) -> Option<f32>;
+}
+
+/// Measures with one resolved font face (`intrinsic_text`, ASCII only).
+pub struct FontFaceMeasurer<'a> {
+    pub font_bytes: &'a [u8],
+}
+
+impl TextMeasurer for FontFaceMeasurer<'_> {
+    fn max_content_px(&self, text: &str, font_size_px: f32) -> Option<f32> {
+        match measure_ascii_text(self.font_bytes, font_size_px, text) {
+            IntrinsicMeasurement::Measured(size) => Some(size.max_content_px),
+            IntrinsicMeasurement::Unknown(_) => None,
+        }
+    }
+}
+
+struct LayoutContext<'a> {
+    first_letter_sizes: Vec<Option<f32>>,
+    measurer: Option<&'a dyn TextMeasurer>,
+}
+
+/// Max-content width of a subtree, or `None` if any text in it can't be measured.
+fn max_content_width(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    measurer: &dyn TextMeasurer,
+    node: NodeId,
+) -> Option<f32> {
+    let candidate = document.node(node)?;
+    let style = styles
+        .get(node)
+        .map(|resolved| resolved.computed)
+        .unwrap_or_else(ComputedStyle::initial);
+    if style.display == Display::None {
+        return Some(0.0);
+    }
+    match &candidate.kind {
+        NodeKind::Text(text) => {
+            let collapsed = text.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+            if collapsed.is_empty() {
+                Some(0.0)
+            } else {
+                measurer.max_content_px(&collapsed, style.font_size_px)
+            }
+        }
+        _ => {
+            if let crate::native_style::SizeValue::Px(px) = style.width {
+                return Some(px);
+            }
+            let children = candidate
+                .children
+                .iter()
+                .filter(|child| {
+                    styles
+                        .get(**child)
+                        .is_none_or(|resolved| resolved.computed.display != Display::None)
+                })
+                .map(|child| {
+                    let width = max_content_width(document, styles, measurer, *child)?;
+                    let display = styles
+                        .get(*child)
+                        .map(|resolved| resolved.computed.display)
+                        .unwrap_or(Display::Inline);
+                    Some((width, display))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let row = style.display.is_flex_context() && style.flex_direction == FlexDirection::Row;
+            let any_block = children
+                .iter()
+                .any(|(_, display)| !display.is_outer_inline());
+            let content = if row {
+                children.iter().map(|(w, _)| w).sum::<f32>()
+                    + style.gap_px * children.len().saturating_sub(1) as f32
+            } else if any_block && !matches!(candidate.kind, NodeKind::Document) {
+                children.iter().map(|(w, _)| *w).fold(0.0, f32::max)
+            } else {
+                children.iter().map(|(w, _)| w).sum::<f32>()
+            };
+            Some(content + style.padding_left_px + style.padding_right_px)
+        }
+    }
+}
+
+/// How a flex/grid item enters the owned geometry request.
+fn geometry_child(
+    document: &NativeDocument,
+    styles: &[ResolvedStyle],
+    ctx: &LayoutContext<'_>,
+    mode: GeometryMode,
+    container_width: f32,
+    child: NodeId,
+) -> GeometryChild {
+    let min_height = estimate_subtree_height(document, styles, child);
+    if matches!(mode, GeometryMode::Grid { .. }) {
+        return GeometryChild::shared(min_height);
+    }
+    let style = styles
+        .get(child)
+        .map(|resolved| resolved.computed)
+        .unwrap_or_else(ComputedStyle::initial);
+    let width = style.width.resolve(container_width);
+    let min_width = style.min_width.resolve(container_width).unwrap_or(0.0);
+    let max_width = style.max_width.resolve(container_width);
+    let flex_basis = style.flex_basis.resolve(container_width);
+    let author_sized = width.is_some() || flex_basis.is_some() || style.flex_grow.is_some();
+    if author_sized {
+        return GeometryChild {
+            min_height,
+            width,
+            min_width,
+            max_width,
+            flex_grow: style.flex_grow.unwrap_or(0.0),
+            flex_shrink: style.flex_shrink,
+            flex_basis,
+        };
+    }
+    if mode == GeometryMode::FlexRow
+        && let Some(measurer) = ctx.measurer
+        && let Some(content) = max_content_width(document, styles, measurer, child)
+    {
+        return GeometryChild {
+            min_height,
+            width: None,
+            min_width,
+            max_width,
+            flex_grow: 0.0,
+            flex_shrink: style.flex_shrink,
+            flex_basis: Some(content),
+        };
+    }
+    GeometryChild::shared(min_height)
+}
+
 fn estimate_subtree_height(
     document: &NativeDocument,
     styles: &[ResolvedStyle],
@@ -230,7 +376,7 @@ fn table_rows(
 fn layout_node(
     document: &NativeDocument,
     styles: &[ResolvedStyle],
-    first_letter_sizes: &[Option<f32>],
+    ctx: &LayoutContext<'_>,
     sheet: &StyleSheet,
     node: NodeId,
     x: f32,
@@ -253,12 +399,12 @@ fn layout_node(
     match &candidate.kind {
         NodeKind::Document => {
             for child in &candidate.children {
-                layout_node(document, styles, first_letter_sizes, sheet, *child, x, width, y, fragments)?;
+                layout_node(document, styles, ctx, sheet, *child, x, width, y, fragments)?;
             }
         }
         NodeKind::Text(text) => {
             let base_line_height = (style.font_size_px * 1.35).ceil();
-            if let Some(first_size) = first_letter_sizes.get(node).copied().flatten() {
+            if let Some(first_size) = ctx.first_letter_sizes.get(node).copied().flatten() {
                 if let Some((byte_index, ch)) = text.char_indices().find(|(_, ch)| !ch.is_whitespace()) {
                     let ch_len = ch.len_utf8();
                     let before = &text[..byte_index];
@@ -355,7 +501,7 @@ fn layout_node(
                     layout_node(
                         document,
                         styles,
-                        first_letter_sizes,
+                        ctx,
                         sheet,
                         *cell,
                         child_x + cell_width * index as f32,
@@ -422,11 +568,21 @@ fn layout_node(
                 mode,
                 width: child_width,
                 gap: style.gap_px,
+                justify: match style.justify_content {
+                    JustifyContent::Start => GeometryJustify::Start,
+                    JustifyContent::Center => GeometryJustify::Center,
+                    JustifyContent::End => GeometryJustify::End,
+                    JustifyContent::SpaceBetween => GeometryJustify::SpaceBetween,
+                },
+                align: match style.align_items {
+                    AlignItems::Stretch => GeometryAlign::Stretch,
+                    AlignItems::Start => GeometryAlign::Start,
+                    AlignItems::Center => GeometryAlign::Center,
+                    AlignItems::End => GeometryAlign::End,
+                },
                 children: visible_children
                     .iter()
-                    .map(|child| GeometryChild {
-                        min_height: estimate_subtree_height(document, styles, *child),
-                    })
+                    .map(|child| geometry_child(document, styles, ctx, mode, child_width, *child))
                     .collect(),
             };
             let geometry =
@@ -438,7 +594,7 @@ fn layout_node(
                 layout_node(
                     document,
                     styles,
-                    first_letter_sizes,
+                    ctx,
                     sheet,
                     *child,
                     child_x + geometry_box.x,
@@ -475,7 +631,7 @@ fn layout_node(
             )?;
 
             for child in &candidate.children {
-                layout_node(document, styles, first_letter_sizes, sheet, *child, child_x, child_width, y, fragments)?;
+                layout_node(document, styles, ctx, sheet, *child, child_x, child_width, y, fragments)?;
             }
 
             emit_generated_text(
@@ -503,16 +659,30 @@ pub fn layout_document_with_styles(
     sheet: &StyleSheet,
     viewport_width: f32,
 ) -> Result<LayoutTree, crate::native_css::CssError> {
+    layout_document_with_measurer(document, sheet, viewport_width, None)
+}
+
+/// Layout with intrinsic text widths from `measurer`, so auto-sized flex items
+/// take their content width instead of sharing space equally.
+pub fn layout_document_with_measurer(
+    document: &NativeDocument,
+    sheet: &StyleSheet,
+    viewport_width: f32,
+    measurer: Option<&dyn TextMeasurer>,
+) -> Result<LayoutTree, crate::native_css::CssError> {
     let width = viewport_width.max(1.0);
     let styles = resolve_styles(document, sheet)?;
-    let first_letter_sizes = first_letter_sizes(document, &styles, sheet)?;
+    let ctx = LayoutContext {
+        first_letter_sizes: first_letter_sizes(document, &styles, sheet)?,
+        measurer,
+    };
     let mut y = 16.0f32;
     let mut fragments = Vec::new();
 
     layout_node(
         document,
         &styles,
-        &first_letter_sizes,
+        &ctx,
         sheet,
         document.root(),
         16.0,

@@ -59,6 +59,42 @@ pub enum FlexDirection {
     Column,
 }
 
+/// A box size along the inline axis: `auto`/`none`, a length, or a percentage of the
+/// containing block's content width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SizeValue {
+    Auto,
+    Px(f32),
+    Percent(f32),
+}
+
+impl SizeValue {
+    /// Resolve against the containing block's width. `Auto` stays unresolved.
+    pub fn resolve(self, containing_width: f32) -> Option<f32> {
+        match self {
+            Self::Auto => None,
+            Self::Px(px) => Some(px),
+            Self::Percent(percent) => Some(containing_width * percent / 100.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JustifyContent {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignItems {
+    Stretch,
+    Start,
+    Center,
+    End,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComputedStyle {
     pub display: Display,
@@ -72,6 +108,18 @@ pub struct ComputedStyle {
     pub flex_direction: FlexDirection,
     pub gap_px: f32,
     pub grid_columns: u16,
+    pub width: SizeValue,
+    pub min_width: SizeValue,
+    /// `Auto` means `max-width: none`.
+    pub max_width: SizeValue,
+    /// `None` when no author style set it. Flex items without an author
+    /// `flex-grow`, `width` or `flex-basis` keep the engine's earlier
+    /// share-the-space behavior unless intrinsic widths can be measured.
+    pub flex_grow: Option<f32>,
+    pub flex_shrink: f32,
+    pub flex_basis: SizeValue,
+    pub justify_content: JustifyContent,
+    pub align_items: AlignItems,
 }
 
 impl ComputedStyle {
@@ -88,6 +136,14 @@ impl ComputedStyle {
             flex_direction: FlexDirection::Row,
             gap_px: 0.0,
             grid_columns: 1,
+            width: SizeValue::Auto,
+            min_width: SizeValue::Auto,
+            max_width: SizeValue::Auto,
+            flex_grow: None,
+            flex_shrink: 1.0,
+            flex_basis: SizeValue::Auto,
+            justify_content: JustifyContent::Start,
+            align_items: AlignItems::Stretch,
         }
     }
 }
@@ -235,6 +291,14 @@ fn assign_property_from(
         "padding-right" => target.padding_right_px = source.padding_right_px,
         "padding-bottom" => target.padding_bottom_px = source.padding_bottom_px,
         "padding-left" => target.padding_left_px = source.padding_left_px,
+        "width" => target.width = source.width,
+        "min-width" => target.min_width = source.min_width,
+        "max-width" => target.max_width = source.max_width,
+        "flex-grow" => target.flex_grow = source.flex_grow,
+        "flex-shrink" => target.flex_shrink = source.flex_shrink,
+        "flex-basis" => target.flex_basis = source.flex_basis,
+        "justify-content" => target.justify_content = source.justify_content,
+        "align-items" => target.align_items = source.align_items,
         _ => {}
     }
 }
@@ -307,6 +371,37 @@ fn apply_value(
         ("padding-right", CssValue::Px(value)) => style.padding_right_px = *value,
         ("padding-bottom", CssValue::Px(value)) => style.padding_bottom_px = *value,
         ("padding-left", CssValue::Px(value)) => style.padding_left_px = *value,
+        ("width" | "min-width" | "max-width" | "flex-basis", value) => {
+            let size = match value {
+                CssValue::Px(px) => SizeValue::Px(*px),
+                CssValue::Percent(percent) => SizeValue::Percent(*percent),
+                _ => SizeValue::Auto, // auto / none
+            };
+            match property {
+                "width" => style.width = size,
+                "min-width" => style.min_width = size,
+                "max-width" => style.max_width = size,
+                _ => style.flex_basis = size,
+            }
+        }
+        ("flex-grow", CssValue::Number(value)) => style.flex_grow = Some(*value),
+        ("flex-shrink", CssValue::Number(value)) => style.flex_shrink = *value,
+        ("justify-content", CssValue::Keyword(value)) => {
+            style.justify_content = match value.as_str() {
+                "center" => JustifyContent::Center,
+                "end" => JustifyContent::End,
+                "space-between" => JustifyContent::SpaceBetween,
+                _ => JustifyContent::Start,
+            };
+        }
+        ("align-items", CssValue::Keyword(value)) => {
+            style.align_items = match value.as_str() {
+                "start" => AlignItems::Start,
+                "center" => AlignItems::Center,
+                "end" => AlignItems::End,
+                _ => AlignItems::Stretch,
+            };
+        }
         _ => {}
     }
 }

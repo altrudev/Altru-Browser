@@ -11,9 +11,54 @@ pub enum GeometryMode {
     Grid { columns: u16 },
 }
 
+/// Main-axis distribution of free space in a flex line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GeometryJustify {
+    #[default]
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+}
+
+/// Cross-axis alignment of flex items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GeometryAlign {
+    #[default]
+    Stretch,
+    Start,
+    Center,
+    End,
+}
+
+/// One item. All sizes are already resolved to CSS pixels by the native engine;
+/// Taffy never sees a percentage, a font or a DOM node.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeometryChild {
     pub min_height: f32,
+    pub width: Option<f32>,
+    pub min_width: f32,
+    pub max_width: Option<f32>,
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    /// `None` = `auto`.
+    pub flex_basis: Option<f32>,
+}
+
+impl GeometryChild {
+    /// An item the engine has no author sizing or measurement for: it shares the
+    /// free space equally with its siblings (the engine's original behavior).
+    pub const fn shared(min_height: f32) -> Self {
+        Self {
+            min_height,
+            width: None,
+            min_width: 0.0,
+            max_width: None,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +66,8 @@ pub struct GeometryRequest {
     pub mode: GeometryMode,
     pub width: f32,
     pub gap: f32,
+    pub justify: GeometryJustify,
+    pub align: GeometryAlign,
     pub children: Vec<GeometryChild>,
 }
 
@@ -63,13 +110,37 @@ mod enabled {
         let mut tree: TaffyTree<()> = TaffyTree::new();
         let mut children = Vec::with_capacity(request.children.len());
         for child in &request.children {
+            let finite = |v: f32| v.is_finite() && v >= 0.0;
+            if !finite(child.min_width)
+                || !finite(child.flex_grow)
+                || !finite(child.flex_shrink)
+                || child.width.is_some_and(|v| !finite(v))
+                || child.max_width.is_some_and(|v| !finite(v))
+                || child.flex_basis.is_some_and(|v| !finite(v))
+            {
+                return Err("invalid owned geometry child".into());
+            }
             let node = tree
                 .new_leaf(Style {
+                    size: Size {
+                        width: child.width.map_or(Dimension::AUTO, Dimension::from_length),
+                        height: Dimension::AUTO,
+                    },
                     min_size: Size {
-                        width: LengthPercentageAuto::length(0.0),
+                        width: LengthPercentageAuto::length(child.min_width),
                         height: LengthPercentageAuto::length(child.min_height.max(1.0)),
                     },
-                    flex_grow: 1.0,
+                    max_size: Size {
+                        width: child
+                            .max_width
+                            .map_or(Dimension::AUTO, Dimension::from_length),
+                        height: Dimension::AUTO,
+                    },
+                    flex_grow: child.flex_grow,
+                    flex_shrink: child.flex_shrink,
+                    flex_basis: child
+                        .flex_basis
+                        .map_or(Dimension::AUTO, Dimension::from_length),
                     ..Default::default()
                 })
                 .map_err(|error| error.to_string())?;
@@ -87,6 +158,21 @@ mod enabled {
             },
             ..Default::default()
         };
+
+        if !matches!(request.mode, GeometryMode::Grid { .. }) {
+            style.justify_content = Some(match request.justify {
+                GeometryJustify::Start => taffy::style::JustifyContent::FlexStart,
+                GeometryJustify::Center => taffy::style::JustifyContent::Center,
+                GeometryJustify::End => taffy::style::JustifyContent::FlexEnd,
+                GeometryJustify::SpaceBetween => taffy::style::JustifyContent::SpaceBetween,
+            });
+            style.align_items = Some(match request.align {
+                GeometryAlign::Stretch => taffy::style::AlignItems::Stretch,
+                GeometryAlign::Start => taffy::style::AlignItems::FlexStart,
+                GeometryAlign::Center => taffy::style::AlignItems::Center,
+                GeometryAlign::End => taffy::style::AlignItems::FlexEnd,
+            });
+        }
 
         match request.mode {
             GeometryMode::FlexRow => {
@@ -266,10 +352,9 @@ mod enabled {
                 mode: GeometryMode::FlexRow,
                 width: 300.0,
                 gap: 10.0,
-                children: vec![
-                    GeometryChild { min_height: 40.0 },
-                    GeometryChild { min_height: 40.0 },
-                ],
+                justify: GeometryJustify::default(),
+                align: GeometryAlign::default(),
+                children: vec![GeometryChild::shared(40.0), GeometryChild::shared(40.0)],
             })
             .unwrap();
             assert_eq!(result.width, 300.0);
@@ -279,15 +364,88 @@ mod enabled {
         }
 
         #[test]
+        fn sized_and_growing_items_share_a_row_like_css() {
+            // A 34%-wide sidebar capped at 280px next to a `flex: 1` editor.
+            let sidebar = GeometryChild {
+                width: Some(340.0),
+                min_width: 160.0,
+                max_width: Some(280.0),
+                flex_grow: 0.0,
+                ..GeometryChild::shared(40.0)
+            };
+            let editor = GeometryChild {
+                flex_grow: 1.0,
+                flex_basis: Some(0.0),
+                ..GeometryChild::shared(40.0)
+            };
+            let result = solve_geometry(&GeometryRequest {
+                mode: GeometryMode::FlexRow,
+                width: 1000.0,
+                gap: 0.0,
+                justify: GeometryJustify::Start,
+                align: GeometryAlign::Stretch,
+                children: vec![sidebar, editor],
+            })
+            .unwrap();
+            assert_eq!(result.children[0].width, 280.0);
+            assert_eq!(result.children[1].x, 280.0);
+            assert_eq!(result.children[1].width, 720.0);
+        }
+
+        #[test]
+        fn space_between_pushes_fixed_items_to_the_edges() {
+            let fixed = |w| GeometryChild {
+                flex_grow: 0.0,
+                flex_basis: Some(w),
+                ..GeometryChild::shared(20.0)
+            };
+            let result = solve_geometry(&GeometryRequest {
+                mode: GeometryMode::FlexRow,
+                width: 1000.0,
+                gap: 12.0,
+                justify: GeometryJustify::SpaceBetween,
+                align: GeometryAlign::Center,
+                children: vec![fixed(50.0), fixed(170.0), fixed(90.0)],
+            })
+            .unwrap();
+            assert_eq!(result.children[0].x, 0.0);
+            assert_eq!(result.children[2].x + result.children[2].width, 1000.0);
+            let left_space = result.children[1].x - 50.0;
+            let right_space = result.children[2].x - (result.children[1].x + 170.0);
+            assert!(
+                (left_space - right_space).abs() < 0.01,
+                "{left_space} vs {right_space}"
+            );
+        }
+
+        #[test]
+        fn invalid_child_sizes_fail_closed() {
+            let request = GeometryRequest {
+                mode: GeometryMode::FlexRow,
+                width: 100.0,
+                gap: 0.0,
+                justify: GeometryJustify::Start,
+                align: GeometryAlign::Stretch,
+                children: vec![GeometryChild {
+                    max_width: Some(f32::NAN),
+                    ..GeometryChild::shared(10.0)
+                }],
+            };
+            assert!(solve_geometry(&request).is_err());
+        }
+
+        #[test]
         fn owned_grid_contract_produces_two_columns() {
             let result = solve_geometry(&GeometryRequest {
                 mode: GeometryMode::Grid { columns: 2 },
                 width: 300.0,
                 gap: 10.0,
+                justify: GeometryJustify::default(),
+                align: GeometryAlign::default(),
                 children: vec![
-                    GeometryChild { min_height: 30.0 },
-                    GeometryChild { min_height: 30.0 },
-                    GeometryChild { min_height: 30.0 },
+                    GeometryChild::shared(30.0),
+                    GeometryChild::shared(30.0),
+                    GeometryChild::shared(30.0),
                 ],
             })
             .unwrap();

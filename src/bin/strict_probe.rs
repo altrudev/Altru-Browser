@@ -9,7 +9,10 @@
 //!   --screen          draw full-screen on the Linux framebuffer (Altru Metal), Ctrl+Q quits
 //!   --html <file>     write the same tree as HTML, for comparison with Chromium/Firefox/WebKit
 //!   --width <px>      layout width (default 1600)
+//!   --font <file.ttf> measure text with this font face, so buttons and labels get
+//!                     their real width (without it, auto-sized items share rows)
 
+use adaptive_web_engine_fabric::native_layout::FontFaceMeasurer;
 use adaptive_web_engine_fabric::pwx_strict::{
     ColorScheme, StrictBridge, native_ui_stylesheet, parse_stream,
 };
@@ -68,11 +71,28 @@ fn main() {
     for note in &adapted {
         println!("css_adapted={note}");
     }
+    let font_bytes =
+        option("--font").map(|path| std::fs::read(path).unwrap_or_else(|e| fail("read font", &e)));
+    let measurer = font_bytes
+        .as_deref()
+        .map(|font_bytes| FontFaceMeasurer { font_bytes });
+    println!(
+        "text_measurement={}",
+        if measurer.is_some() { "font" } else { "none" }
+    );
     let snapshot = bridge.snapshot();
-    let scene = snapshot.scene(&sheet, width as f32).unwrap_or_else(|e| {
-        eprintln!("hint: ui.css uses flexbox; build with --features taffy-layout");
-        fail("layout", &e)
-    });
+    let scene = snapshot
+        .scene_measured(
+            &sheet,
+            width as f32,
+            measurer
+                .as_ref()
+                .map(|m| m as &dyn adaptive_web_engine_fabric::native_layout::TextMeasurer),
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("hint: ui.css uses flexbox; build with --features taffy-layout");
+            fail("layout", &e)
+        });
     println!("scene_commands={}", scene.commands.len());
     draw(&scene, width, &args, option("--ppm"));
 }

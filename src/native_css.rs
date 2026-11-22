@@ -299,6 +299,10 @@ pub enum CssValue {
     UnsupportedContent(String),
     Var(String),
     Raw(String),
+    /// A percentage, as a number of percent (`34%` -> 34.0).
+    Percent(f32),
+    /// A unitless non-negative number (flex-grow, flex-shrink).
+    Number(f32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -748,6 +752,143 @@ fn parse_px(property: &str, value: &str) -> Result<f32, CssError> {
     Ok(parsed)
 }
 
+/// `<length-percentage>` or one of `keywords`, for sizing properties.
+fn parse_size_value(property: &str, value: &str, keywords: &[&str]) -> Result<CssValue, CssError> {
+    if keywords.contains(&value) {
+        return Ok(CssValue::Keyword(value.into()));
+    }
+    if value == "0" {
+        return Ok(CssValue::Px(0.0));
+    }
+    if let Some(number) = value.strip_suffix('%') {
+        let parsed = number
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0);
+        return parsed
+            .map(CssValue::Percent)
+            .ok_or_else(|| CssError::InvalidValue {
+                property: property.into(),
+                value: value.into(),
+            });
+    }
+    Ok(CssValue::Px(parse_px(property, value)?))
+}
+
+fn parse_flex_number(property: &str, value: &str) -> Result<f32, CssError> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .ok_or_else(|| CssError::InvalidValue {
+            property: property.into(),
+            value: value.into(),
+        })
+}
+
+/// Expand the `flex` shorthand into longhands.
+/// Supports `none`, `auto`, `<grow>`, `<grow> <shrink>`, `<grow> <shrink> <basis>`
+/// and `<grow> <basis>`.
+fn expand_flex_shorthand(value: &str) -> Result<Vec<Declaration>, CssError> {
+    let longhands = |grow: f32, shrink: f32, basis: CssValue| {
+        vec![
+            Declaration {
+                property: "flex-grow".into(),
+                value: CssValue::Number(grow),
+            },
+            Declaration {
+                property: "flex-shrink".into(),
+                value: CssValue::Number(shrink),
+            },
+            Declaration {
+                property: "flex-basis".into(),
+                value: basis,
+            },
+        ]
+    };
+    match value {
+        "none" => return Ok(longhands(0.0, 0.0, CssValue::Keyword("auto".into()))),
+        "auto" => return Ok(longhands(1.0, 1.0, CssValue::Keyword("auto".into()))),
+        _ => {}
+    }
+    let parts = value.split_ascii_whitespace().collect::<Vec<_>>();
+    match parts.as_slice() {
+        [grow] => Ok(longhands(
+            parse_flex_number("flex", grow)?,
+            1.0,
+            CssValue::Percent(0.0),
+        )),
+        [grow, second] => {
+            let grow = parse_flex_number("flex", grow)?;
+            match second.parse::<f32>() {
+                Ok(_) => Ok(longhands(
+                    grow,
+                    parse_flex_number("flex", second)?,
+                    CssValue::Percent(0.0),
+                )),
+                Err(_) => Ok(longhands(
+                    grow,
+                    1.0,
+                    parse_size_value("flex", second, &["auto"])?,
+                )),
+            }
+        }
+        [grow, shrink, basis] => Ok(longhands(
+            parse_flex_number("flex", grow)?,
+            parse_flex_number("flex", shrink)?,
+            parse_size_value("flex", basis, &["auto"])?,
+        )),
+        _ => Err(CssError::InvalidValue {
+            property: "flex".into(),
+            value: value.into(),
+        }),
+    }
+}
+
+/// Expand `padding` / `margin` (1-4 lengths) into the longhands the engine models.
+/// Returns `None` when any part isn't a plain length (e.g. `auto`, `var()`, `%`):
+/// the shorthand is then skipped, as it was before shorthands were parsed.
+/// The engine has no horizontal margins yet, so `margin` yields top and bottom only.
+fn expand_box_shorthand(property: &str, value: &str) -> Option<Vec<Declaration>> {
+    let parts = value
+        .split_ascii_whitespace()
+        .map(|part| {
+            if part == "0" {
+                Some(0.0)
+            } else {
+                parse_px(property, part).ok()
+            }
+        })
+        .collect::<Option<Vec<f32>>>()?;
+    let (top, right, bottom, left) = match parts.as_slice() {
+        [all] => (*all, *all, *all, *all),
+        [vertical, horizontal] => (*vertical, *horizontal, *vertical, *horizontal),
+        [top, horizontal, bottom] => (*top, *horizontal, *bottom, *horizontal),
+        [top, right, bottom, left] => (*top, *right, *bottom, *left),
+        _ => return None,
+    };
+    let sides: Vec<(&str, f32)> = if property == "padding" {
+        vec![
+            ("padding-top", top),
+            ("padding-right", right),
+            ("padding-bottom", bottom),
+            ("padding-left", left),
+        ]
+    } else {
+        vec![("margin-top", top), ("margin-bottom", bottom)]
+    };
+    Some(
+        sides
+            .into_iter()
+            .map(|(name, px)| Declaration {
+                property: name.into(),
+                value: CssValue::Px(px),
+            })
+            .collect(),
+    )
+}
+
 fn parse_declarations_with_translations(
     input: &str,
 ) -> Result<(Vec<Declaration>, Vec<TranslationReceipt>), CssError> {
@@ -778,7 +919,9 @@ fn parse_declarations_with_translations(
             match property.as_str() {
                 "display" | "flex-direction" | "grid-template-columns" | "font-size"
                 | "margin-top" | "margin-bottom" | "padding-top" | "padding-right"
-                | "padding-bottom" | "padding-left" | "gap" => Some(CssValue::Global(keyword)),
+                | "padding-bottom" | "padding-left" | "gap" | "width" | "min-width"
+                | "max-width" | "flex-grow" | "flex-shrink" | "flex-basis"
+                | "justify-content" | "align-items" => Some(CssValue::Global(keyword)),
                 _ => None,
             }
         } else {
@@ -886,6 +1029,45 @@ fn parse_declarations_with_translations(
                         Some(CssValue::Px(parse_px(&property, value)?))
                     }
                 }
+                // Sizing values the engine doesn't model yet (em, vw, calc(), …) are
+                // skipped, as they were before these properties were parsed, so no
+                // page that rendered before starts failing.
+                "width" | "min-width" | "flex-basis" => {
+                    parse_size_value(&property, value, &["auto"]).ok()
+                }
+                "max-width" => parse_size_value(&property, value, &["none"]).ok(),
+                "flex-grow" | "flex-shrink" => parse_flex_number(&property, value)
+                    .ok()
+                    .map(CssValue::Number),
+                "flex" => {
+                    if let Ok(longhands) = expand_flex_shorthand(value) {
+                        declarations.extend(longhands);
+                    }
+                    None
+                }
+                "padding" | "margin" => {
+                    if let Some(longhands) = expand_box_shorthand(&property, value) {
+                        declarations.extend(longhands);
+                    }
+                    None
+                }
+                "justify-content" => match value {
+                    "normal" | "flex-start" | "start" | "left" => {
+                        Some(CssValue::Keyword("start".into()))
+                    }
+                    "flex-end" | "end" | "right" => Some(CssValue::Keyword("end".into())),
+                    "center" => Some(CssValue::Keyword("center".into())),
+                    "space-between" => Some(CssValue::Keyword("space-between".into())),
+                    // Other distributions are not modelled yet: CSS-compatible recovery.
+                    _ => None,
+                },
+                "align-items" => match value {
+                    "normal" | "stretch" => Some(CssValue::Keyword("stretch".into())),
+                    "flex-start" | "start" => Some(CssValue::Keyword("start".into())),
+                    "flex-end" | "end" => Some(CssValue::Keyword("end".into())),
+                    "center" => Some(CssValue::Keyword("center".into())),
+                    _ => None,
+                },
                 // CSS-compatible recovery for properties N2 does not implement.
                 _ => None,
             }
@@ -1746,5 +1928,67 @@ mod tests {
         .unwrap();
         let sheet = stylesheet_from_document(&document).unwrap();
         assert_eq!(sheet.rules.len(), 1);
+    }
+
+    fn props(css: &str) -> Vec<(String, CssValue)> {
+        parse_declarations(css)
+            .unwrap()
+            .into_iter()
+            .map(|d| (d.property, d.value))
+            .collect()
+    }
+
+    #[test]
+    fn flex_shorthand_expands_to_longhands() {
+        assert_eq!(
+            props("flex: 1"),
+            [
+                ("flex-grow".into(), CssValue::Number(1.0)),
+                ("flex-shrink".into(), CssValue::Number(1.0)),
+                ("flex-basis".into(), CssValue::Percent(0.0)),
+            ]
+        );
+        assert_eq!(props("flex: none")[0].1, CssValue::Number(0.0));
+        assert_eq!(props("flex: 2 0 120px")[2].1, CssValue::Px(120.0));
+        assert_eq!(props("flex: 1 auto")[2].1, CssValue::Keyword("auto".into()));
+        // Forms the engine doesn't model are skipped, never fatal.
+        assert!(props("flex: 1 1 calc(10px + 1em)").is_empty());
+    }
+
+    #[test]
+    fn box_shorthands_expand_and_skip_what_isnt_modelled() {
+        let padding = props("padding: 10px 16px");
+        assert_eq!(padding.len(), 4);
+        assert_eq!(padding[1], ("padding-right".into(), CssValue::Px(16.0)));
+        assert_eq!(padding[2], ("padding-bottom".into(), CssValue::Px(10.0)));
+        assert_eq!(
+            props("margin: 0 0 8px"),
+            [
+                ("margin-top".into(), CssValue::Px(0.0)),
+                ("margin-bottom".into(), CssValue::Px(8.0)),
+            ]
+        );
+        assert!(props("margin: auto").is_empty());
+        assert!(props("padding: var(--x)").is_empty());
+    }
+
+    #[test]
+    fn sizing_and_alignment_values() {
+        assert_eq!(props("width: 34%")[0].1, CssValue::Percent(34.0));
+        assert_eq!(
+            props("max-width: none")[0].1,
+            CssValue::Keyword("none".into())
+        );
+        assert_eq!(props("min-width: 160px")[0].1, CssValue::Px(160.0));
+        assert!(props("width: 50vw").is_empty());
+        assert_eq!(
+            props("justify-content: space-between")[0].1,
+            CssValue::Keyword("space-between".into())
+        );
+        assert_eq!(
+            props("align-items: flex-start")[0].1,
+            CssValue::Keyword("start".into())
+        );
+        assert!(props("justify-content: space-evenly").is_empty());
     }
 }
