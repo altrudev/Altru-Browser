@@ -133,8 +133,8 @@ mod enabled {
                     max_size: Size {
                         width: child
                             .max_width
-                            .map_or(Dimension::AUTO, Dimension::from_length),
-                        height: Dimension::AUTO,
+                            .map_or_else(LengthPercentageAuto::auto, LengthPercentageAuto::length),
+                        height: LengthPercentageAuto::auto(),
                     },
                     flex_grow: child.flex_grow,
                     flex_shrink: child.flex_shrink,
@@ -161,16 +161,16 @@ mod enabled {
 
         if !matches!(request.mode, GeometryMode::Grid { .. }) {
             style.justify_content = Some(match request.justify {
-                GeometryJustify::Start => taffy::style::JustifyContent::FlexStart,
-                GeometryJustify::Center => taffy::style::JustifyContent::Center,
-                GeometryJustify::End => taffy::style::JustifyContent::FlexEnd,
-                GeometryJustify::SpaceBetween => taffy::style::JustifyContent::SpaceBetween,
+                GeometryJustify::Start => taffy::style::JustifyContent::FLEX_START,
+                GeometryJustify::Center => taffy::style::JustifyContent::CENTER,
+                GeometryJustify::End => taffy::style::JustifyContent::FLEX_END,
+                GeometryJustify::SpaceBetween => taffy::style::JustifyContent::SPACE_BETWEEN,
             });
             style.align_items = Some(match request.align {
-                GeometryAlign::Stretch => taffy::style::AlignItems::Stretch,
-                GeometryAlign::Start => taffy::style::AlignItems::FlexStart,
-                GeometryAlign::Center => taffy::style::AlignItems::Center,
-                GeometryAlign::End => taffy::style::AlignItems::FlexEnd,
+                GeometryAlign::Stretch => taffy::style::AlignItems::STRETCH,
+                GeometryAlign::Start => taffy::style::AlignItems::FLEX_START,
+                GeometryAlign::Center => taffy::style::AlignItems::CENTER,
+                GeometryAlign::End => taffy::style::AlignItems::FLEX_END,
             });
         }
 
