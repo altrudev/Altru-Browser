@@ -1,0 +1,90 @@
+create	1	h1
+attr	1	class	title
+text	1	Notes
+create	2	small
+attr	2	class	muted
+text	2	Stored only on this device
+create	3	button
+attr	3	class	btn btn-primary
+listen	3	click
+text	3	New note
+create	4	header
+attr	4	class	bar
+append	4	1
+append	4	2
+append	4	3
+create	5	ul
+attr	5	class	list
+attr	5	aria-label	Notes
+create	6	input
+attr	6	class	field field-title
+attr	6	placeholder	Title
+attr	6	aria-label	Title
+listen	6	input
+create	7	textarea
+attr	7	class	field field-body
+attr	7	placeholder	Write something
+attr	7	aria-label	Note
+attr	7	spellcheck	true
+listen	7	input
+create	8	small
+attr	8	class	muted
+text	8	
+create	9	button
+attr	9	class	btn btn-danger
+listen	9	click
+text	9	Delete
+create	10	div
+attr	10	class	row
+append	10	8
+append	10	9
+create	11	main
+attr	11	class	editor hidden
+append	11	6
+append	11	7
+append	11	10
+create	12	p
+attr	12	class	empty
+text	12	No notes yet. Create one to start.
+create	13	div
+attr	13	class	split
+append	13	5
+append	13	11
+append	13	12
+create	14	div
+attr	14	class	app
+append	14	4
+append	14	13
+append	0	14
+frame
+attr	11	class	editor hidden
+attr	12	class	empty
+frame
+event	3	click	
+prop	6	value	s:
+prop	7	value	s:
+text	8	
+create	15	button
+attr	15	class	item
+attr	15	aria-current	true
+listen	15	click
+text	15	Untitled
+create	16	li
+append	16	15
+append	5	16
+attr	11	class	editor
+attr	12	class	empty hidden
+focus	6
+frame
+event	6	input	Hello from Altru Metal
+text	15	Hello from Altru Metal
+text	8	Saving
+frame
+text	8	Saved on this device
+frame
+event	7	input	Typed into a PWX app, drawn by our own engine.
+text	15	Hello from Altru Metal
+text	8	Saving
+frame
+text	8	Saved on this device
+frame

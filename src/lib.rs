@@ -27,6 +27,7 @@ pub mod native_style;
 pub mod platform;
 #[cfg(target_os = "linux")]
 pub mod platform_metal;
+pub mod pwx_strict;
 pub mod receipt;
 pub mod resource_api;
 pub mod script_engine;
