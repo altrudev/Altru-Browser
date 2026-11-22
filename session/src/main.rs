@@ -113,6 +113,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    event_loop.run(None, &mut data, move |_| {})?;
+    // Send every reply to clients after each loop iteration. Redraws are
+    // demand-driven, so replies must never wait for the next frame.
+    event_loop.run(None, &mut data, move |data| {
+        let _ = data.display_handle.flush_clients();
+    })?;
     Ok(())
 }
