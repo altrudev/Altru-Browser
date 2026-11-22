@@ -10,6 +10,14 @@ homepage = "https://altru.dev"
 readme = "README.md"
 publish = false
 
+# Altru Session (the compositor) lives in `session/`. It needs Wayland, EGL and
+# libinput system libraries, so it is not a default member: `cargo build`,
+# `cargo test` and the audit scripts at the root still cover only the engine.
+# Build it with `cargo build -p altru-session`.
+[workspace]
+members = [".", "session"]
+default-members = ["."]
+
 [features]
 default = []
 servo-engine = ["dep:servo", "dep:dpi", "dep:url", "servo/bundled"]

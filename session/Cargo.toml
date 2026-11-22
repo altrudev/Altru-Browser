@@ -1,0 +1,21 @@
+[package]
+name = "altru-session"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Altru Session: Wayland compositor and display layer of the Altru platform"
+authors = ["Valentyn Rukhaylo / Altru.dev"]
+repository = "https://github.com/altrudev/Altru-Browser"
+publish = false
+
+# The compositor core started from Smithay's `smallvil` example (MIT).
+# See LICENSE-SMITHAY.
+
+[dependencies]
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+bitflags = "2.2.1"
+
+[dependencies.smithay]
+version = "=0.7.0"
+default-features = false
+features = ["backend_winit", "wayland_frontend", "desktop"]
