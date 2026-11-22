@@ -35,8 +35,7 @@ pub fn init_winit(
     event_loop: &mut EventLoop<CalloopData>,
     data: &mut CalloopData,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let display_handle = &mut data.display_handle;
-    let state = &mut data.state;
+    let state = data;
 
     let (backend, winit) = winit::init_from_attributes(
         WindowAttributes::default()
@@ -58,7 +57,7 @@ pub fn init_winit(
             model: "Session (nested)".into(),
         },
     );
-    let _global = output.create_global::<AltruSession>(display_handle);
+    let _global = output.create_global::<AltruSession>(&state.display_handle);
     output.change_current_state(
         Some(mode),
         Some(Transform::Flipped180),
@@ -77,7 +76,7 @@ pub fn init_winit(
     event_loop
         .handle()
         .insert_source(winit, move |event, _, data| {
-            let state = &mut data.state;
+            let state = data;
             match event {
                 WinitEvent::Resized { size, .. } => {
                     events_output.change_current_state(
@@ -104,7 +103,7 @@ pub fn init_winit(
     event_loop
         .handle()
         .insert_source(Timer::immediate(), move |_, _, data| {
-            let state = &mut data.state;
+            let state = data;
             if !state.needs_redraw {
                 return TimeoutAction::ToDuration(FRAME);
             }
@@ -146,7 +145,7 @@ pub fn init_winit(
             });
             state.space.refresh();
             state.popups.cleanup();
-            let _ = data.display_handle.flush_clients();
+            let _ = state.display_handle.flush_clients();
             TimeoutAction::ToDuration(FRAME)
         })?;
 

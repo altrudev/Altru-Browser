@@ -1,5 +1,6 @@
 mod compositor;
 mod xdg_shell;
+mod xwayland;
 
 use crate::AltruSession;
 

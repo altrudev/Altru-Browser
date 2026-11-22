@@ -23,16 +23,12 @@ mod shortcuts;
 mod state;
 mod winit;
 
-use smithay::reexports::{
-    calloop::EventLoop,
-    wayland_server::{Display, DisplayHandle},
-};
+use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 pub use state::AltruSession;
 
-pub struct CalloopData {
-    state: AltruSession,
-    display_handle: DisplayHandle,
-}
+/// The event loop's data is the session state itself, so Smithay handlers that
+/// need the loop handle (XWayland's window manager) can use it directly.
+pub type CalloopData = AltruSession;
 
 fn usage() {
     eprintln!(
@@ -64,49 +60,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new()?;
     let display: Display<AltruSession> = Display::new()?;
-    let display_handle = display.handle();
-    let state = AltruSession::new(&mut event_loop, display);
-    let mut data = CalloopData {
-        state,
-        display_handle,
-    };
+    let mut data = AltruSession::new(&mut event_loop, display);
 
     crate::winit::init_winit(&mut event_loop, &mut data)?;
-    println!(
-        "wayland_display={}",
-        data.state.socket_name.to_string_lossy()
-    );
+    println!("wayland_display={}", data.socket_name.to_string_lossy());
 
     let audio_mode = plan.audio();
     if let audio::AudioMode::Fixed(clock) = audio_mode {
         println!("{}", audio::apply(Some(clock)));
-        data.state.audio_latency = Some(clock.env_value());
+        data.audio_latency = Some(clock.env_value());
     }
 
-    let path_var = std::env::var("PATH").ok();
-    let apps = if plan.apps.is_empty() {
+    data.pending_launch = if plan.apps.is_empty() {
         profile::parse_args(&["--run".into(), "foot".into()]).apps
     } else {
         plan.apps
     };
-    for app in apps {
-        let program = &app.argv[0];
-        if !profile::is_installed(program, path_var.as_deref()) {
-            if app.package.is_empty() {
-                eprintln!("missing: {program}");
-            } else {
-                eprintln!(
-                    "missing: {} (install: sudo apt install {})",
-                    app.label, app.package
-                );
-            }
-            continue;
-        }
-        match data.state.launch(&app.argv) {
-            Ok(pid) => println!("started: {} (pid {pid})", app.argv.join(" ")),
-            Err(error) => eprintln!("failed: {}: {error}", app.argv.join(" ")),
-        }
-    }
+    // Apps start once XWayland is ready, so X11-only programs find a display.
+    data.start_xwayland(&mut event_loop);
 
     // Send every reply to clients after each loop iteration. Redraws are
     // demand-driven, so replies must never wait for the next frame.

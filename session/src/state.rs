@@ -5,25 +5,31 @@ use smithay::{
     input::{Seat, SeatState},
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{
+            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic,
+        },
         wayland_server::{
             Display, DisplayHandle, Resource,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{IsAlive, Logical, Point, SERIAL_COUNTER},
+    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState, with_states},
         output::OutputManagerState,
+        seat::WaylandFocus,
         selection::data_device::DataDeviceState,
         shell::xdg::{XdgShellState, XdgToplevelSurfaceData},
         shm::ShmState,
         socket::ListeningSocketSource,
+        xwayland_shell::XWaylandShellState,
     },
+    xwayland::X11Wm,
 };
 
 use crate::CalloopData;
+use crate::profile::{App, is_installed};
 use crate::shortcuts::{Action, cycle};
 
 pub struct AltruSession {
@@ -40,6 +46,13 @@ pub struct AltruSession {
     pub launch_order: Vec<u32>,
     /// `PIPEWIRE_LATENCY` for apps this session starts, when a clock is forced.
     pub audio_latency: Option<String>,
+    /// Apps to start once XWayland is ready (or has failed).
+    pub pending_launch: Vec<App>,
+    pub loop_handle: LoopHandle<'static, CalloopData>,
+    pub xwayland_shell_state: XWaylandShellState,
+    pub xwm: Option<X11Wm>,
+    /// X11 display number served by XWayland, once it is ready.
+    pub xdisplay: Option<u32>,
     /// Something on screen changed since the last frame.
     pub needs_redraw: bool,
     pub loop_signal: LoopSignal,
@@ -102,6 +115,11 @@ impl AltruSession {
             tiled_rank: Vec::new(),
             launch_order: Vec::new(),
             audio_latency: None,
+            pending_launch: Vec::new(),
+            loop_handle: event_loop.handle(),
+            xwayland_shell_state: XWaylandShellState::new::<Self>(&dh),
+            xwm: None,
+            xdisplay: None,
             needs_redraw: true,
             loop_signal,
             socket_name,
@@ -149,10 +167,7 @@ impl AltruSession {
                 |_, display, state| {
                     // Safety: we don't drop the display
                     unsafe {
-                        display
-                            .get_mut()
-                            .dispatch_clients(&mut state.state)
-                            .unwrap();
+                        display.get_mut().dispatch_clients(state).unwrap();
                     }
                     Ok(PostAction::Continue)
                 },
@@ -167,8 +182,8 @@ impl AltruSession {
     /// processes this session didn't start (or that re-spawned themselves) go last.
     pub fn add_tiled(&mut self, window: Window) {
         let pid = window
-            .toplevel()
-            .and_then(|toplevel| toplevel.wl_surface().client())
+            .wl_surface()
+            .and_then(|surface| surface.client())
             .and_then(|client| client.get_credentials(&self.display_handle).ok())
             .map(|credentials| credentials.pid as u32);
         let rank = pid
@@ -185,8 +200,33 @@ impl AltruSession {
         self.tiled_rank.insert(at, rank);
     }
 
-    /// Start a program on this session. Wayland toolkits are selected and DISPLAY
-    /// is removed so nothing silently opens on another (X11) desktop.
+    /// Start the apps waiting in `pending_launch`, reporting missing ones with the
+    /// package to install.
+    pub fn launch_pending(&mut self) {
+        let path_var = std::env::var("PATH").ok();
+        for app in std::mem::take(&mut self.pending_launch) {
+            let program = &app.argv[0];
+            if !is_installed(program, path_var.as_deref()) {
+                if app.package.is_empty() {
+                    eprintln!("missing: {program}");
+                } else {
+                    eprintln!(
+                        "missing: {} (install: sudo apt install {})",
+                        app.label, app.package
+                    );
+                }
+                continue;
+            }
+            match self.launch(&app.argv) {
+                Ok(pid) => println!("started: {} (pid {pid})", app.argv.join(" ")),
+                Err(error) => eprintln!("failed: {}: {error}", app.argv.join(" ")),
+            }
+        }
+    }
+
+    /// Start a program on this session. Wayland toolkits are selected; DISPLAY
+    /// points at this session's XWayland (or is removed while there is none), so
+    /// nothing silently opens on another desktop.
     pub fn launch(&mut self, argv: &[String]) -> std::io::Result<u32> {
         let (program, args) = argv.split_first().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command")
@@ -195,7 +235,7 @@ impl AltruSession {
         if let Some(latency) = &self.audio_latency {
             command.env("PIPEWIRE_LATENCY", latency);
         }
-        let child = command
+        command
             .args(args)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env("XDG_SESSION_TYPE", "wayland")
@@ -204,8 +244,12 @@ impl AltruSession {
             .env("SDL_VIDEODRIVER", "wayland")
             .env("MOZ_ENABLE_WAYLAND", "1")
             .env("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
-            .env_remove("DISPLAY")
-            .spawn()?;
+            .env_remove("DISPLAY");
+        // X11-only apps reach this session's XWayland, never another desktop.
+        if let Some(display) = self.xdisplay {
+            command.env("DISPLAY", format!(":{display}"));
+        }
+        let child = command.spawn()?;
         self.launch_order.push(child.id());
         Ok(child.id())
     }
@@ -214,7 +258,7 @@ impl AltruSession {
         let focus = self.seat.get_keyboard()?.current_focus()?;
         self.tiled
             .iter()
-            .position(|w| w.toplevel().is_some_and(|t| *t.wl_surface() == focus))
+            .position(|w| w.wl_surface().is_some_and(|s| *s == focus))
     }
 
     /// Give keyboard focus to the window at layout position `index`.
@@ -222,10 +266,19 @@ impl AltruSession {
         let Some(window) = self.tiled.get(index).cloned() else {
             return;
         };
-        let Some(surface) = window.toplevel().map(|t| t.wl_surface().clone()) else {
+        let Some(surface) = window.wl_surface().map(|s| s.into_owned()) else {
             return;
         };
         self.space.raise_element(&window, true);
+        // X11 windows also need X11 focus and stacking.
+        for other in &self.tiled {
+            if let Some(x11) = other.x11_surface() {
+                let _ = x11.set_activated(other == &window);
+            }
+        }
+        if let (Some(x11), Some(wm)) = (window.x11_surface(), self.xwm.as_mut()) {
+            let _ = wm.raise_window(x11);
+        }
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
         self.needs_redraw = true;
@@ -257,10 +310,13 @@ impl AltruSession {
                 }
             }
             Action::Close => {
-                if let Some(index) = self.focused_index()
-                    && let Some(toplevel) = self.tiled[index].toplevel()
-                {
-                    toplevel.send_close();
+                if let Some(index) = self.focused_index() {
+                    let window = &self.tiled[index];
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.send_close();
+                    } else if let Some(x11) = window.x11_surface() {
+                        let _ = x11.close();
+                    }
                 }
             }
             Action::Quit => self.loop_signal.stop(),
@@ -268,6 +324,14 @@ impl AltruSession {
         }
         if action != Action::None {
             println!("shortcut: {action:?}");
+        }
+    }
+
+    /// Remove `window` from the layout.
+    pub fn remove_tiled_window(&mut self, window: &Window) {
+        if let Some(index) = self.tiled.iter().position(|w| w == window) {
+            self.tiled.remove(index);
+            self.tiled_rank.remove(index);
         }
     }
 
@@ -340,11 +404,14 @@ impl AltruSession {
                     toplevel.send_pending_configure();
                 }
             }
-            self.space.map_element(
-                window,
-                (geometry.loc.x + tile.x, geometry.loc.y + tile.y),
-                false,
-            );
+            let location = (geometry.loc.x + tile.x, geometry.loc.y + tile.y);
+            if let Some(x11) = window.x11_surface() {
+                let _ = x11.configure(Rectangle::new(
+                    location.into(),
+                    (tile.width, tile.height).into(),
+                ));
+            }
+            self.space.map_element(window, location, false);
         }
     }
 

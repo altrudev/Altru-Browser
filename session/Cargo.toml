@@ -18,4 +18,4 @@ bitflags = "2.2.1"
 [dependencies.smithay]
 version = "=0.7.0"
 default-features = false
-features = ["backend_winit", "wayland_frontend", "desktop"]
+features = ["backend_winit", "wayland_frontend", "desktop", "xwayland"]

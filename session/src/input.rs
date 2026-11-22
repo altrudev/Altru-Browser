@@ -88,19 +88,23 @@ impl AltruSession {
                         .element_under(pointer.current_location())
                         .map(|(w, l)| (w.clone(), l))
                     {
-                        self.space.raise_element(&window, true);
-                        keyboard.set_focus(
-                            self,
-                            Some(window.toplevel().unwrap().wl_surface().clone()),
-                            serial,
-                        );
+                        if let Some(index) = self.tiled.iter().position(|w| *w == window) {
+                            self.focus_index(index);
+                        } else {
+                            // Floating X11 menus and popups: raise, keep keyboard focus.
+                            self.space.raise_element(&window, true);
+                        }
                         self.space.elements().for_each(|window| {
-                            window.toplevel().unwrap().send_pending_configure();
+                            if let Some(toplevel) = window.toplevel() {
+                                toplevel.send_pending_configure();
+                            }
                         });
                     } else {
                         self.space.elements().for_each(|window| {
                             window.set_activated(false);
-                            window.toplevel().unwrap().send_pending_configure();
+                            if let Some(toplevel) = window.toplevel() {
+                                toplevel.send_pending_configure();
+                            }
                         });
                         keyboard.set_focus(self, Option::<WlSurface>::None, serial);
                     }
