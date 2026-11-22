@@ -108,7 +108,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .env_remove("DISPLAY")
             .spawn();
         match spawned {
-            Ok(child) => println!("started: {} (pid {})", app.argv.join(" "), child.id()),
+            Ok(child) => {
+                data.state.launch_order.push(child.id());
+                println!("started: {} (pid {})", app.argv.join(" "), child.id());
+            }
             Err(error) => eprintln!("failed: {}: {error}", app.argv.join(" ")),
         }
     }

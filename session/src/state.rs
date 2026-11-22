@@ -33,6 +33,10 @@ pub struct AltruSession {
     pub space: Space<Window>,
     /// Windows in layout order: the first is the main (left) window.
     pub tiled: Vec<Window>,
+    /// Launch position of each window in `tiled` (same order).
+    tiled_rank: Vec<usize>,
+    /// Process ids of the apps this session started, in launch order.
+    pub launch_order: Vec<u32>,
     /// Something on screen changed since the last frame.
     pub needs_redraw: bool,
     pub loop_signal: LoopSignal,
@@ -92,6 +96,8 @@ impl AltruSession {
 
             space,
             tiled: Vec::new(),
+            tiled_rank: Vec::new(),
+            launch_order: Vec::new(),
             needs_redraw: true,
             loop_signal,
             socket_name,
@@ -152,11 +158,56 @@ impl AltruSession {
         socket_name
     }
 
+    /// Add a new window to the layout, keeping launch order: the first app
+    /// listed stays the main window however fast each app starts. Windows from
+    /// processes this session didn't start (or that re-spawned themselves) go last.
+    pub fn add_tiled(&mut self, window: Window) {
+        let pid = window
+            .toplevel()
+            .and_then(|toplevel| toplevel.wl_surface().client())
+            .and_then(|client| client.get_credentials(&self.display_handle).ok())
+            .map(|credentials| credentials.pid as u32);
+        let rank = pid
+            .and_then(|pid| {
+                self.launch_order
+                    .iter()
+                    .position(|launched| *launched == pid)
+            })
+            .unwrap_or(usize::MAX);
+        let at = self
+            .tiled_rank
+            .partition_point(|existing| *existing <= rank);
+        self.tiled.insert(at, window);
+        self.tiled_rank.insert(at, rank);
+    }
+
+    /// Remove the window showing `surface` from the layout.
+    pub fn remove_tiled(&mut self, surface: &WlSurface) {
+        if let Some(index) = self
+            .tiled
+            .iter()
+            .position(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
+        {
+            self.tiled.remove(index);
+            self.tiled_rank.remove(index);
+        }
+    }
+
     /// Lay every window out again with `crate::layout::tiles`.
     /// Called when a window opens or closes and when the screen size changes.
     pub fn retile(&mut self) {
         self.needs_redraw = true;
-        self.tiled.retain(|window| window.alive());
+        let mut ranks = std::mem::take(&mut self.tiled_rank).into_iter();
+        let mut kept_ranks = Vec::new();
+        self.tiled.retain(|window| {
+            let rank = ranks.next().unwrap_or(usize::MAX);
+            let alive = window.alive();
+            if alive {
+                kept_ranks.push(rank);
+            }
+            alive
+        });
+        self.tiled_rank = kept_ranks;
         let Some(output) = self.space.outputs().next().cloned() else {
             return;
         };

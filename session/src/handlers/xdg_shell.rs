@@ -37,17 +37,13 @@ impl XdgShellHandler for AltruSession {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window.clone(), (0, 0), false);
-        self.tiled.push(window);
+        self.add_tiled(window);
         self.retile();
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let wl_surface = surface.wl_surface();
-        self.tiled.retain(|window| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() != wl_surface)
-        });
+        self.remove_tiled(wl_surface);
         let closed = self
             .space
             .elements()
