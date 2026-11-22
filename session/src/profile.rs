@@ -125,6 +125,8 @@ pub struct Plan {
     pub profiles: Vec<String>,
     /// `--latency`, if given.
     pub latency: Option<AudioMode>,
+    /// `--backend drm|winit`, if given (default: decided by the environment).
+    pub backend: Option<String>,
 }
 
 impl Plan {
@@ -171,6 +173,14 @@ pub fn parse_args(args: &[String]) -> Plan {
                     Err(error) => plan.errors.push(error),
                 },
                 _ => plan.errors.push(format!("{arg} needs a command")),
+            },
+            "--backend" => match iter.next().map(String::as_str) {
+                Some(name @ ("drm" | "winit")) => plan.backend = Some(name.to_string()),
+                Some("auto") => plan.backend = None,
+                other => plan.errors.push(format!(
+                    "--backend needs auto, drm or winit (got {})",
+                    other.unwrap_or("nothing")
+                )),
             },
             "--latency" => match iter.next().map(|value| parse_latency(value)) {
                 Some(Ok(mode)) => plan.latency = Some(mode),

@@ -14,6 +14,7 @@
 #![allow(irrefutable_let_patterns)]
 
 mod audio;
+mod drm;
 mod grabs;
 mod handlers;
 mod input;
@@ -32,7 +33,7 @@ pub type CalloopData = AltruSession;
 
 fn usage() {
     eprintln!(
-        "usage: altru-session [--profile studio|art|dev]... [--run \"command args\"]... [--latency low|default|FRAMES[@RATE]]\n\
+        "usage: altru-session [--profile studio|art|dev]... [--run \"command args\"]... [--latency low|default|FRAMES[@RATE]] [--backend auto|drm|winit]\n\
          \n  studio  Ardour, qpwgraph, terminal\n  art     Krita, darktable, GIMP\n  dev     VS Code, terminal"
     );
 }
@@ -62,7 +63,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let display: Display<AltruSession> = Display::new()?;
     let mut data = AltruSession::new(&mut event_loop, display);
 
-    crate::winit::init_winit(&mut event_loop, &mut data)?;
+    // Inside another desktop: a window (winit). On a text console: the hardware.
+    let nested =
+        std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
+    let use_drm = match plan.backend.as_deref() {
+        Some("drm") => true,
+        Some("winit") => false,
+        _ => !nested,
+    };
+    if use_drm {
+        if let Err(error) = crate::drm::init_drm(&mut event_loop, &mut data) {
+            eprintln!("altru-session: hardware backend failed: {error}");
+            std::process::exit(1);
+        }
+    } else {
+        crate::winit::init_winit(&mut event_loop, &mut data)?;
+    }
     println!("wayland_display={}", data.socket_name.to_string_lossy());
 
     let audio_mode = plan.audio();

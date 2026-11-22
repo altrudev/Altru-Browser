@@ -11,6 +11,7 @@
 //! | Super + Enter         | open a terminal                        |
 //! | Super + Q             | close this window (the app may ask)    |
 //! | Ctrl + Alt + Backspace| leave Altru Session                    |
+//! | Ctrl + Alt + F1 … F12 | switch to a text console (on hardware) |
 
 /// Modifier state when a key is pressed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -31,6 +32,8 @@ pub enum Action {
     OpenTerminal,
     Close,
     Quit,
+    /// Switch to virtual terminal N (hardware backend).
+    SwitchVt(i32),
     /// A shortcut key being released: swallowed, does nothing.
     None,
 }
@@ -46,10 +49,16 @@ const XK_BACKSPACE: u32 = 0xff08;
 const XK_TAB: u32 = 0xff09;
 const XK_RETURN: u32 = 0xff0d;
 const XK_KP_ENTER: u32 = 0xff8d;
+const XF86_SWITCH_VT_1: u32 = 0x1008_fe01;
+const XF86_SWITCH_VT_12: u32 = 0x1008_fe0c;
 
 /// The action for a key press, or `None` to pass the key to the focused app.
 /// `keysym` is the symbol with modifiers applied (Shift+Tab is ISO_Left_Tab).
 pub fn action_for(mods: Mods, keysym: u32) -> Option<Action> {
+    // The keymap turns Ctrl+Alt+F1…F12 into these symbols.
+    if (XF86_SWITCH_VT_1..=XF86_SWITCH_VT_12).contains(&keysym) {
+        return Some(Action::SwitchVt((keysym - XF86_SWITCH_VT_1 + 1) as i32));
+    }
     if mods.ctrl && mods.alt && !mods.logo && keysym == XK_BACKSPACE {
         return Some(Action::Quit);
     }
@@ -173,6 +182,23 @@ mod tests {
                 XK_BACKSPACE
             ),
             None
+        );
+    }
+
+    #[test]
+    fn console_switching() {
+        let ctrl_alt = Mods {
+            ctrl: true,
+            alt: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            action_for(ctrl_alt, XF86_SWITCH_VT_1),
+            Some(Action::SwitchVt(1))
+        );
+        assert_eq!(
+            action_for(ctrl_alt, XF86_SWITCH_VT_12),
+            Some(Action::SwitchVt(12))
         );
     }
 

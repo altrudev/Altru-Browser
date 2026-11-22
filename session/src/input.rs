@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
         keyboard::FilterResult,
@@ -47,7 +47,34 @@ impl AltruSession {
                     self.run_action(action);
                 }
             }
-            InputEvent::PointerMotion { .. } => {}
+            InputEvent::PointerMotion { event, .. } => {
+                // Mice and touchpads on the hardware backend move relatively.
+                let pointer = self.seat.get_pointer().unwrap();
+                let mut pos = pointer.current_location() + event.delta();
+                let bounds = self
+                    .space
+                    .outputs()
+                    .filter_map(|o| self.space.output_geometry(o))
+                    .reduce(|a, b| a.merge(b));
+                if let Some(bounds) = bounds {
+                    let max_x = (bounds.loc.x + bounds.size.w - 1) as f64;
+                    let max_y = (bounds.loc.y + bounds.size.h - 1) as f64;
+                    pos.x = pos.x.clamp(bounds.loc.x as f64, max_x);
+                    pos.y = pos.y.clamp(bounds.loc.y as f64, max_y);
+                }
+                let under = self.surface_under(pos);
+                pointer.motion(
+                    self,
+                    under,
+                    &MotionEvent {
+                        location: pos,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    },
+                );
+                pointer.frame(self);
+                self.needs_redraw = true;
+            }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let output = self.space.outputs().next().unwrap();
 

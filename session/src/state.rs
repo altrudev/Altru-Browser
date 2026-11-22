@@ -2,7 +2,7 @@ use std::{ffi::OsString, sync::Arc};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{Seat, SeatState, pointer::CursorImageStatus},
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     reexports::{
         calloop::{
@@ -17,6 +17,7 @@ use smithay::{
     utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState, with_states},
+        dmabuf::{DmabufGlobal, DmabufState},
         output::OutputManagerState,
         seat::WaylandFocus,
         selection::data_device::DataDeviceState,
@@ -67,6 +68,12 @@ pub struct AltruSession {
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
+    /// What the pointer should look like, as set by the app under it.
+    pub cursor_status: CursorImageStatus,
+    /// Hardware backend, when running directly on the machine.
+    pub drm: Option<crate::drm::DrmBackend>,
+    pub dmabuf_state: DmabufState,
+    pub dmabuf_global: Option<DmabufGlobal>,
 }
 
 impl AltruSession {
@@ -133,6 +140,10 @@ impl AltruSession {
             data_device_state,
             popups,
             seat,
+            cursor_status: CursorImageStatus::default_named(),
+            drm: None,
+            dmabuf_state: DmabufState::new(),
+            dmabuf_global: None,
         }
     }
 
@@ -321,6 +332,7 @@ impl AltruSession {
                 }
             }
             Action::Quit => self.loop_signal.stop(),
+            Action::SwitchVt(vt) => self.switch_vt(vt),
             Action::None => {}
         }
         if action != Action::None {
