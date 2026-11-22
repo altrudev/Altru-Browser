@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, CalloopData> = EventLoop::try_new()?;
     let display: Display<AltruSession> = Display::new()?;
     let mut data = AltruSession::new(&mut event_loop, display);
 

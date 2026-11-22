@@ -70,7 +70,7 @@ pub struct AltruSession {
 }
 
 impl AltruSession {
-    pub fn new(event_loop: &mut EventLoop<CalloopData>, display: Display<Self>) -> Self {
+    pub fn new(event_loop: &mut EventLoop<'static, CalloopData>, display: Display<Self>) -> Self {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
@@ -81,6 +81,7 @@ impl AltruSession {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let popups = PopupManager::default();
 
         // A seat is a group of keyboards, pointer and touch devices.
@@ -117,7 +118,7 @@ impl AltruSession {
             audio_latency: None,
             pending_launch: Vec::new(),
             loop_handle: event_loop.handle(),
-            xwayland_shell_state: XWaylandShellState::new::<Self>(&dh),
+            xwayland_shell_state,
             xwm: None,
             xdisplay: None,
             needs_redraw: true,
