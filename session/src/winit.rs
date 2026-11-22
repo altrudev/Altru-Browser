@@ -16,9 +16,12 @@ use smithay::{
         winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
-    reexports::calloop::{
-        EventLoop,
-        timer::{TimeoutAction, Timer},
+    reexports::{
+        calloop::{
+            EventLoop,
+            timer::{TimeoutAction, Timer},
+        },
+        winit::{dpi::LogicalSize, window::WindowAttributes},
     },
     utils::{Rectangle, Transform},
 };
@@ -35,7 +38,11 @@ pub fn init_winit(
     let display_handle = &mut data.display_handle;
     let state = &mut data.state;
 
-    let (backend, winit) = winit::init()?;
+    let (backend, winit) = winit::init_from_attributes(
+        WindowAttributes::default()
+            .with_title("Altru Session")
+            .with_inner_size(LogicalSize::new(1280.0, 800.0)),
+    )?;
 
     let mode = Mode {
         size: backend.window_size(),

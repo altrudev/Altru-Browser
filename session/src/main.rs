@@ -13,6 +13,7 @@
 
 #![allow(irrefutable_let_patterns)]
 
+mod audio;
 mod grabs;
 mod handlers;
 mod input;
@@ -35,7 +36,7 @@ pub struct CalloopData {
 
 fn usage() {
     eprintln!(
-        "usage: altru-session [--profile studio|art|dev]... [--run \"command args\"]...\n\
+        "usage: altru-session [--profile studio|art|dev]... [--run \"command args\"]... [--latency low|default|FRAMES[@RATE]]\n\
          \n  studio  Ardour, qpwgraph, terminal\n  art     Krita, darktable, GIMP\n  dev     VS Code, terminal"
     );
 }
@@ -76,6 +77,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         data.state.socket_name.to_string_lossy()
     );
 
+    let audio_mode = plan.audio();
+    if let audio::AudioMode::Fixed(clock) = audio_mode {
+        println!("{}", audio::apply(Some(clock)));
+        data.state.audio_latency = Some(clock.env_value());
+    }
+
     let path_var = std::env::var("PATH").ok();
     let apps = if plan.apps.is_empty() {
         profile::parse_args(&["--run".into(), "foot".into()]).apps
@@ -103,8 +110,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Send every reply to clients after each loop iteration. Redraws are
     // demand-driven, so replies must never wait for the next frame.
-    event_loop.run(None, &mut data, move |data| {
+    let result = event_loop.run(None, &mut data, move |data| {
         let _ = data.display_handle.flush_clients();
-    })?;
+    });
+    if let audio::AudioMode::Fixed(_) = audio_mode {
+        println!("{}", audio::apply(None));
+    }
+    result?;
     Ok(())
 }

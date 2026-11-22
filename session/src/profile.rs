@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use crate::audio::{AudioMode, STUDIO, parse_latency};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
     /// Shown to the user.
@@ -119,9 +121,27 @@ pub const PROFILES: &[&str] = &["studio", "art", "dev"];
 pub struct Plan {
     pub apps: Vec<App>,
     pub errors: Vec<String>,
+    /// Profiles asked for, in order.
+    pub profiles: Vec<String>,
+    /// `--latency`, if given.
+    pub latency: Option<AudioMode>,
 }
 
-/// Parse `--profile NAME` and `--run "CMD"` (both repeatable), in order.
+impl Plan {
+    /// Audio for this session: `--latency` if given, low latency for the studio
+    /// profile, otherwise PipeWire's own defaults.
+    pub fn audio(&self) -> AudioMode {
+        self.latency
+            .unwrap_or(if self.profiles.iter().any(|p| p == "studio") {
+                AudioMode::Fixed(STUDIO)
+            } else {
+                AudioMode::Default
+            })
+    }
+}
+
+/// Parse `--profile NAME` and `--run "CMD"` (both repeatable, in order) and
+/// `--latency low|default|FRAMES[@RATE]`.
 pub fn parse_args(args: &[String]) -> Plan {
     let mut plan = Plan::default();
     let mut iter = args.iter();
@@ -129,7 +149,10 @@ pub fn parse_args(args: &[String]) -> Plan {
         match arg.as_str() {
             "--profile" | "-p" => match iter.next() {
                 Some(name) => match profile(name) {
-                    Some(apps) => plan.apps.extend(apps),
+                    Some(apps) => {
+                        plan.apps.extend(apps);
+                        plan.profiles.push(name.clone());
+                    }
                     None => plan.errors.push(format!(
                         "unknown profile {name:?} (choose from: {})",
                         PROFILES.join(", ")
@@ -148,6 +171,11 @@ pub fn parse_args(args: &[String]) -> Plan {
                     Err(error) => plan.errors.push(error),
                 },
                 _ => plan.errors.push(format!("{arg} needs a command")),
+            },
+            "--latency" => match iter.next().map(|value| parse_latency(value)) {
+                Some(Ok(mode)) => plan.latency = Some(mode),
+                Some(Err(error)) => plan.errors.push(error),
+                None => plan.errors.push("--latency needs a value".into()),
             },
             other => plan.errors.push(format!("unknown argument {other:?}")),
         }
@@ -189,6 +217,27 @@ mod tests {
         assert!(plan.errors.is_empty());
         assert_eq!(plan.apps[0].argv, ["foot", "-e", "htop"]);
         assert_eq!(plan.apps[1].label, "VS Code");
+    }
+
+    #[test]
+    fn studio_gets_low_latency_unless_told_otherwise() {
+        assert_eq!(
+            parse_args(&args(&["-p", "studio"])).audio(),
+            AudioMode::Fixed(STUDIO)
+        );
+        assert_eq!(
+            parse_args(&args(&["-p", "art"])).audio(),
+            AudioMode::Default
+        );
+        assert_eq!(
+            parse_args(&args(&["-p", "studio", "--latency", "default"])).audio(),
+            AudioMode::Default
+        );
+        assert_eq!(
+            parse_args(&args(&["-p", "dev", "--latency", "low"])).audio(),
+            AudioMode::Fixed(STUDIO)
+        );
+        assert_eq!(parse_args(&args(&["--latency", "100"])).errors.len(), 1);
     }
 
     #[test]

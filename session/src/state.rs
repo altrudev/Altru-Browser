@@ -38,6 +38,8 @@ pub struct AltruSession {
     tiled_rank: Vec<usize>,
     /// Process ids of the apps this session started, in launch order.
     pub launch_order: Vec<u32>,
+    /// `PIPEWIRE_LATENCY` for apps this session starts, when a clock is forced.
+    pub audio_latency: Option<String>,
     /// Something on screen changed since the last frame.
     pub needs_redraw: bool,
     pub loop_signal: LoopSignal,
@@ -99,6 +101,7 @@ impl AltruSession {
             tiled: Vec::new(),
             tiled_rank: Vec::new(),
             launch_order: Vec::new(),
+            audio_latency: None,
             needs_redraw: true,
             loop_signal,
             socket_name,
@@ -188,7 +191,11 @@ impl AltruSession {
         let (program, args) = argv.split_first().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command")
         })?;
-        let child = std::process::Command::new(program)
+        let mut command = std::process::Command::new(program);
+        if let Some(latency) = &self.audio_latency {
+            command.env("PIPEWIRE_LATENCY", latency);
+        }
+        let child = command
             .args(args)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env("XDG_SESSION_TYPE", "wayland")
