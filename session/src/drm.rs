@@ -42,7 +42,10 @@ use smithay::{
         udev::{all_gpus, primary_gpu},
     },
     delegate_dmabuf,
-    desktop::space::{SpaceRenderElements, space_render_elements},
+    desktop::{
+        layer_map_for_output,
+        space::{SpaceRenderElements, space_render_elements},
+    },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::{Mode as WlMode, Output, PhysicalProperties, Subpixel},
     reexports::{
@@ -366,6 +369,7 @@ fn render_all(state: &mut AltruSession) -> bool {
         return true;
     };
     let mut all_drawn = true;
+    let mut drawn_outputs = Vec::new();
     for screen in drm.screens.values_mut() {
         if screen.pending {
             all_drawn = false;
@@ -441,13 +445,11 @@ fn render_all(state: &mut AltruSession) -> bool {
             Err(error) => eprintln!("drm: render: {error}"),
         }
 
-        let elapsed = state.start_time.elapsed();
-        let output = screen.output.clone();
-        state.space.elements().for_each(|window| {
-            window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| {
-                Some(output.clone())
-            })
-        });
+        drawn_outputs.push(screen.output.clone());
+    }
+    for output in &drawn_outputs {
+        state.send_frames(output);
+        layer_map_for_output(output).cleanup();
     }
     state.space.refresh();
     state.popups.cleanup();

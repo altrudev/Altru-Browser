@@ -1,8 +1,9 @@
 use std::{ffi::OsString, sync::Arc};
 
 use smithay::{
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output},
     input::{Seat, SeatState, pointer::CursorImageStatus},
+    output::Output,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     reexports::{
         calloop::{
@@ -21,6 +22,7 @@ use smithay::{
         output::OutputManagerState,
         seat::WaylandFocus,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+        shell::wlr_layer::{Layer, WlrLayerShellState},
         shell::xdg::{XdgShellState, XdgToplevelSurfaceData},
         shm::ShmState,
         socket::ListeningSocketSource,
@@ -66,6 +68,7 @@ pub struct AltruSession {
     pub seat_state: SeatState<AltruSession>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    pub layer_shell_state: WlrLayerShellState,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -90,6 +93,7 @@ impl AltruSession {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let popups = PopupManager::default();
 
@@ -141,6 +145,7 @@ impl AltruSession {
             seat_state,
             data_device_state,
             primary_selection_state,
+            layer_shell_state,
             popups,
             seat,
             cursor_status: CursorImageStatus::default_named(),
@@ -381,9 +386,12 @@ impl AltruSession {
         let Some(output) = self.space.outputs().next().cloned() else {
             return;
         };
-        let Some(geometry) = self.space.output_geometry(&output) else {
+        let Some(output_geometry) = self.space.output_geometry(&output) else {
             return;
         };
+        // Keep panels' reserved space out of the tiling.
+        let mut geometry = layer_map_for_output(&output).non_exclusive_zone();
+        geometry.loc += output_geometry.loc;
         let tiles = crate::layout::tiles(self.tiled.len(), geometry.size.w, geometry.size.h);
         let many = self.tiled.len() > 1;
         for (window, tile) in self.tiled.clone().into_iter().zip(tiles) {
@@ -435,13 +443,30 @@ impl AltruSession {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space
-            .element_under(pos)
-            .and_then(|(window, location)| {
-                window
-                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(s, p)| (s, (p + location).to_f64()))
+        // Panels and launchers above the windows, then windows, then wallpapers.
+        self.layer_surface_under(pos, &[Layer::Overlay, Layer::Top])
+            .or_else(|| {
+                self.space
+                    .element_under(pos)
+                    .and_then(|(window, location)| {
+                        window
+                            .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                            .map(|(s, p)| (s, (p + location).to_f64()))
+                    })
             })
+            .or_else(|| self.layer_surface_under(pos, &[Layer::Bottom, Layer::Background]))
+    }
+
+    /// Ask every window and layer surface on `output` to draw its next frame.
+    pub fn send_frames(&self, output: &Output) {
+        let elapsed = self.start_time.elapsed();
+        let primary = |_: &WlSurface, _: &_| Some(output.clone());
+        self.space.elements().for_each(|window| {
+            window.send_frame(output, elapsed, Some(std::time::Duration::ZERO), primary)
+        });
+        for layer in layer_map_for_output(output).layers() {
+            layer.send_frame(output, elapsed, Some(std::time::Duration::ZERO), primary);
+        }
     }
 }
 

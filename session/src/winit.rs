@@ -15,6 +15,7 @@ use smithay::{
         },
         winit::{self, WinitEvent},
     },
+    desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
@@ -135,15 +136,9 @@ pub fn init_winit(
             backend.submit(Some(&[damage])).unwrap();
 
             // Let clients draw their next frame; their commit marks the next redraw.
-            state.space.elements().for_each(|window| {
-                window.send_frame(
-                    &output,
-                    state.start_time.elapsed(),
-                    Some(Duration::ZERO),
-                    |_, _| Some(output.clone()),
-                )
-            });
+            state.send_frames(&output);
             state.space.refresh();
+            layer_map_for_output(&output).cleanup();
             state.popups.cleanup();
             let _ = state.display_handle.flush_clients();
             TimeoutAction::ToDuration(FRAME)
