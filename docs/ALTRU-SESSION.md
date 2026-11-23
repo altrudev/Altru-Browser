@@ -14,7 +14,7 @@ altru-session --profile dev --run "foot"  # VS Code, terminal, plus anything els
 `altru-session` is a workspace member but not a default member, so root `cargo build`,
 `cargo test` and the audit scripts still cover only the engine.
 
-## What it does (v0.2)
+## What it does (v0.3)
 
 | Area | Status |
 | --- | --- |
@@ -23,6 +23,8 @@ altru-session --profile dev --run "foot"  # VS Code, terminal, plus anything els
 | **Automatic layout:** first app is the main window, others stacked; launch order kept | tested |
 | **Keyboard control** (table below) | tested |
 | **XWayland:** X11-only apps tiled like the rest | tested (xclock, xcalc) |
+| **Clipboard between X11 and Wayland apps**, plus primary selection (middle-click paste) | tested (xclip ↔ wl-clipboard, both directions) |
+| **Panels, launchers, notifications** (wlr-layer-shell): windows tile around a panel's reserved space; a launcher gets the keyboard | tested (Waybar panel, fuzzel launcher via Super+D) |
 | **Low-latency audio** for the studio profile (PipeWire) | tested |
 | **GPU apps** (linux-dmabuf, hardware backend) | built; needs the G700 test |
 | **Demand-driven drawing:** ~1% CPU when idle | tested (nested) |
@@ -51,6 +53,7 @@ Everything uses the Super (Windows) key, so app shortcuts pass through untouched
 | Super + 1 … 9 | go to window 1 … 9 (1 is the main one) |
 | Super + Space | make this window the main one |
 | Super + Enter | open a terminal |
+| Super + D | open the app launcher (fuzzel, wofi or bemenu, first installed) |
 | Super + Q | close this window (the app may ask first) |
 | Ctrl + Alt + F1 … F12 | switch to a text console (hardware backend) |
 | Ctrl + Alt + Backspace | leave Altru Session |
@@ -65,6 +68,13 @@ for any profile (for example `--latency 64@96000`).
 If the session is killed instead of closed with Ctrl+Alt+Backspace, the setting stays
 until PipeWire restarts or `pw-metadata -n settings 0 clock.force-quantum 0` is run.
 
+### Panels and launchers
+
+Any wlr-layer-shell program works: a panel such as Waybar (`--run waybar`), a launcher
+such as fuzzel (Super+D), a notification daemon such as mako. Space a panel reserves is
+kept out of the tiling. A launcher or lock screen that asks for the keyboard gets it,
+and the keyboard returns to the main window when it closes.
+
 ### XWayland
 
 Starts with the session. Profile apps start once it's ready, so X11-only programs find
@@ -74,8 +84,8 @@ Wayland-only.
 
 ## Known limits
 
-- **No clipboard between X11 and Wayland apps yet.** Copy and paste works within each side.
-- No primary selection, fractional scaling, server-side decorations or screen capture yet.
+- No fractional scaling, server-side decorations, screen capture or XDG activation yet.
+- X11 apps can read the clipboard only while an X11 app has the keyboard, so a background X11 program can't watch what you copy. Wayland apps follow the same focus rule.
 - **One GPU.** Hybrid-graphics laptops use the boot GPU.
 - No display settings yet (resolution, scale, arrangement): preferred mode, left to right.
 
@@ -87,7 +97,7 @@ Do this once, at the laptop itself (not over SSH).
    ```bash
    sudo apt install -y build-essential pkg-config git curl libwayland-dev libudev-dev \
      libinput-dev libgbm-dev libseat-dev libxkbcommon-dev libdrm-dev libegl1-mesa-dev \
-     libgles-dev xwayland pipewire pipewire-bin wireplumber foot seatd
+     libgles-dev xwayland pipewire pipewire-bin wireplumber foot seatd fuzzel waybar
    curl https://sh.rustup.rs -sSf | sh
    git clone -b altru-metal https://github.com/altrudev/Altru-Browser && cd Altru-Browser
    cargo build --release -p altru-session
@@ -102,7 +112,7 @@ Do this once, at the laptop itself (not over SSH).
    Super+Space (window 2 becomes main); Super+Q closes it.
 5. **Console switch:** Ctrl+Alt+F2 goes to a text console; Ctrl+Alt+F1 (or the VT you
    started on) comes back with everything intact.
-6. **X11 app:** `--run xclock` (from `x11-apps`) appears tiled.
+6. **X11 app and launcher:** `--run waybar --run xclock` (from `x11-apps`): the clock appears tiled below the panel. Super+D opens the launcher; type `foot`, press Enter.
 7. **GPU app:** in the terminal, `glxgears` or `es2gears_wayland` (`mesa-utils` /
    `mesa-utils-extra`) should run smoothly. Then open Krita or darktable.
 8. **Audio:** `--profile studio --run foot`, then
