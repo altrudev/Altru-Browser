@@ -20,7 +20,7 @@ use smithay::{
         dmabuf::{DmabufGlobal, DmabufState},
         output::OutputManagerState,
         seat::WaylandFocus,
-        selection::data_device::DataDeviceState,
+        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::xdg::{XdgShellState, XdgToplevelSurfaceData},
         shm::ShmState,
         socket::ListeningSocketSource,
@@ -65,6 +65,7 @@ pub struct AltruSession {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<AltruSession>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -88,6 +89,7 @@ impl AltruSession {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let popups = PopupManager::default();
 
@@ -138,6 +140,7 @@ impl AltruSession {
             output_manager_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
             popups,
             seat,
             cursor_status: CursorImageStatus::default_named(),

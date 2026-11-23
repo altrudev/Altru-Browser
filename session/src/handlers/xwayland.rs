@@ -2,14 +2,28 @@
 //! run inside Altru Session and are tiled like any other window. Menus, tooltips
 //! and other override-redirect windows float where the app puts them.
 
-use std::process::Stdio;
+use std::{os::fd::OwnedFd, process::Stdio};
 
 use smithay::{
     delegate_xwayland_shell,
     desktop::Window,
     reexports::calloop::EventLoop,
     utils::{Logical, Rectangle},
-    wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
+    wayland::{
+        seat::WaylandFocus,
+        selection::{
+            SelectionTarget,
+            data_device::{
+                clear_data_device_selection, current_data_device_selection_userdata,
+                request_data_device_client_selection, set_data_device_selection,
+            },
+            primary_selection::{
+                clear_primary_selection, current_primary_selection_userdata,
+                request_primary_client_selection, set_primary_selection,
+            },
+        },
+        xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
+    },
     xwayland::{
         X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
         xwm::{Reorder, ResizeEdge, XwmId},
@@ -182,6 +196,66 @@ impl XwmHandler for AltruSession {
         {
             self.space.map_element(window, geometry.loc, false);
             self.needs_redraw = true;
+        }
+    }
+
+    /// X11 apps may read the clipboard only while one of them has the keyboard,
+    /// so a background X11 program can't watch what you copy.
+    fn allow_selection_access(&mut self, xwm: XwmId, _selection: SelectionTarget) -> bool {
+        let Some(focus) = self.seat.get_keyboard().and_then(|k| k.current_focus()) else {
+            return false;
+        };
+        self.space.elements().any(|window| {
+            window
+                .x11_surface()
+                .is_some_and(|x11| x11.xwm_id() == Some(xwm))
+                && window.wl_surface().is_some_and(|s| *s == focus)
+        })
+    }
+
+    fn send_selection(
+        &mut self,
+        _xwm: XwmId,
+        selection: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+    ) {
+        let result = match selection {
+            SelectionTarget::Clipboard => {
+                request_data_device_client_selection(&self.seat, mime_type, fd)
+                    .map_err(|e| e.to_string())
+            }
+            SelectionTarget::Primary => request_primary_client_selection(&self.seat, mime_type, fd)
+                .map_err(|e| e.to_string()),
+        };
+        if let Err(error) = result {
+            eprintln!("clipboard: X11 app could not read the Wayland selection: {error}");
+        }
+    }
+
+    fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        match selection {
+            SelectionTarget::Clipboard => {
+                set_data_device_selection(&self.display_handle, &self.seat, mime_types, ())
+            }
+            SelectionTarget::Primary => {
+                set_primary_selection(&self.display_handle, &self.seat, mime_types, ())
+            }
+        }
+    }
+
+    fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
+        match selection {
+            SelectionTarget::Clipboard => {
+                if current_data_device_selection_userdata(&self.seat).is_some() {
+                    clear_data_device_selection(&self.display_handle, &self.seat)
+                }
+            }
+            SelectionTarget::Primary => {
+                if current_primary_selection_userdata(&self.seat).is_some() {
+                    clear_primary_selection(&self.display_handle, &self.seat)
+                }
+            }
         }
     }
 
