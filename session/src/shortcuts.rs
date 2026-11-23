@@ -9,6 +9,7 @@
 //! | Super + 1 … 9         | go to window 1 … 9 (1 is the main one) |
 //! | Super + Space         | make this window the main one          |
 //! | Super + Enter         | open a terminal                        |
+//! | Super + D             | open the app launcher                  |
 //! | Super + Q             | close this window (the app may ask)    |
 //! | Ctrl + Alt + Backspace| leave Altru Session                    |
 //! | Ctrl + Alt + F1 … F12 | switch to a text console (on hardware) |
@@ -30,6 +31,8 @@ pub enum Action {
     FocusIndex(usize),
     MakeMain,
     OpenTerminal,
+    /// Open the app launcher.
+    OpenLauncher,
     Close,
     Quit,
     /// Switch to virtual terminal N (hardware backend).
@@ -41,6 +44,8 @@ pub enum Action {
 // X keysym values (xkbcommon), so this stays testable without a keyboard.
 const XK_SPACE: u32 = 0x0020;
 const XK_1: u32 = 0x0031;
+const XK_D_UPPER: u32 = 0x0044;
+const XK_D: u32 = 0x0064;
 const XK_9: u32 = 0x0039;
 const XK_Q_UPPER: u32 = 0x0051;
 const XK_Q: u32 = 0x0071;
@@ -72,6 +77,7 @@ pub fn action_for(mods: Mods, keysym: u32) -> Option<Action> {
         XK_SPACE if !mods.shift => Some(Action::MakeMain),
         XK_RETURN | XK_KP_ENTER if !mods.shift => Some(Action::OpenTerminal),
         XK_Q | XK_Q_UPPER if !mods.shift => Some(Action::Close),
+        XK_D | XK_D_UPPER if !mods.shift => Some(Action::OpenLauncher),
         _ => None,
     }
 }
@@ -116,6 +122,7 @@ mod tests {
         assert_eq!(action_for(SUPER, XK_SPACE), Some(Action::MakeMain));
         assert_eq!(action_for(SUPER, XK_RETURN), Some(Action::OpenTerminal));
         assert_eq!(action_for(SUPER, XK_Q), Some(Action::Close));
+        assert_eq!(action_for(SUPER, XK_D), Some(Action::OpenLauncher));
     }
 
     #[test]

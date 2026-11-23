@@ -35,6 +35,9 @@ use crate::CalloopData;
 use crate::profile::{App, is_installed};
 use crate::shortcuts::{Action, cycle};
 
+/// App launchers tried by Super+D, first installed wins. All use wlr-layer-shell.
+const LAUNCHERS: &[&[&str]] = &[&["fuzzel"], &["wofi", "--show", "drun"], &["bemenu-run"]];
+
 pub struct AltruSession {
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
@@ -327,6 +330,23 @@ impl AltruSession {
             Action::OpenTerminal => {
                 if let Err(error) = self.launch(&["foot".to_string()]) {
                     eprintln!("altru-session: could not open a terminal: {error}");
+                }
+            }
+            Action::OpenLauncher => {
+                let path_var = std::env::var("PATH").ok();
+                let launcher = LAUNCHERS
+                    .iter()
+                    .find(|argv| is_installed(argv[0], path_var.as_deref()));
+                match launcher {
+                    Some(argv) => {
+                        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+                        if let Err(error) = self.launch(&argv) {
+                            eprintln!("altru-session: could not open the launcher: {error}");
+                        }
+                    }
+                    None => eprintln!(
+                        "altru-session: no app launcher installed (install: sudo apt install fuzzel)"
+                    ),
                 }
             }
             Action::Close => {
